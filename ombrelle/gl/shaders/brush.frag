@@ -221,18 +221,51 @@ float mixOrient(float a, float b, float w){
 }
 
 // 動いている所は動きに沿った筆、止まっている所は等深線に沿った筆(形をなぞる)
-float strokeAngle(vec2 q, vec2 p, float t){
+//
+// **重要**: 筆の格子は画素ごとに向きで回転する。向きの場が「筆1本の大きさ」より
+// 速く変化すると、同じ一筆に属するはずの画素が別々の格子を見て格子が破れる。
+// 大きい筆にしたら向きの場も同じ比率で滑らかにしなければならない。
+// 以下、空間周波数と深度の差分幅をすべて筆の大きさ bs で割っている。
+float strokeAngle(vec2 q, vec2 p, float t, float bs){
   vec2 f = windF(q, t);
   float flowA = atan(f.y, f.x);
 
-  float e = 2.0/uRes.y;
-  vec2 gd = vec2(depthAt(q + vec2(e,0)) - depthAt(q - vec2(e,0)),
-                 depthAt(q + vec2(0,e)) - depthAt(q - vec2(0,e)));
-  // 等深線 = 勾配に直交する向き
-  float contourA = (dot(gd, gd) > 1e-9) ? atan(gd.x, -gd.y) : 1.5708;
+  // 深度の勾配も筆の大きさに合わせた幅で取る(細かい凹凸に反応させない)
+  float e = clamp(2.0*bs/uRes.y, 1.0/uRes.y, 0.05);
+
+  // 1点の勾配をそのまま使うと、深度が不連続な輪郭で向きが数画素の間に大きく振れ、
+  // 一筆の中で格子が破れて縁が毛羽立つ。**構造テンソル**で筆の footprint の中を
+  // 平均する。向きは軸なので、平均は 2 倍角ベクトルの和で取るのが正しい
+  // (勾配ベクトルをそのまま平均すると符号が反転して打ち消し合う)。
+  vec2 tensor = vec2(0.0);
+  float wsum = 0.0;
+  for (int i = 0; i < 5; i++){
+    vec2 o = (i == 0) ? vec2(0.0)
+           : vec2(cos(1.2566*float(i)), sin(1.2566*float(i))) * e * 1.6;
+    vec2 g = vec2(depthAt(q + o + vec2(e,0)) - depthAt(q + o - vec2(e,0)),
+                  depthAt(q + o + vec2(0,e)) - depthAt(q + o - vec2(0,e)));
+    float m = length(g);
+    if (m > 1e-6){
+      float a = atan(g.x, -g.y);                  // 等深線 = 勾配に直交する向き
+      tensor += vec2(cos(2.0*a), sin(2.0*a)) * m; // 大きい勾配ほど強く効く
+      wsum += m;
+    }
+  }
+  float contourA = (dot(tensor, tensor) > 1e-12) ? 0.5*atan(tensor.y, tensor.x) : 1.5708;
+  // 向きが揃っている(=テンソルの長さが重みの和に近い)ほど輪郭に従わせる。
+  // 輪郭が入り組んで向きが打ち消し合う場所では従わない
+  float coh = (wsum > 1e-6) ? length(tensor)/wsum : 0.0;
+  vec2 gd = vec2(wsum/5.0, 0.0);   // 以降の structW 用に平均勾配の大きさだけ渡す
+
+  // 平らな壁や机では勾配がほぼ 0 で、向きを決める根拠が無い。定数に倒すと
+  // 筆が一斉に揃って帯状に融合するので、ゆるい斜めの筋目を基本にして
+  // 低周波で振る。全周(2π)振ると渦模様になるので振れ幅は ±0.8 rad に留める。
+  float hatchA = 0.9 + (fbm2(p*1.1/bs + 11.0) - 0.5)*1.6;
+  float structW = smoothstep(0.004, 0.045, length(gd)/max(bs, 0.2)) * smoothstep(0.35, 0.85, coh);
+  float baseA = mixOrient(hatchA, contourA, structW);
 
   float w = smoothstep(0.10, 0.75, length(f));
-  return mixOrient(contourA, flowA, w) + (fbm2(p*1.6) - 0.5)*0.55;
+  return mixOrient(baseA, flowA, w) + (fbm2(p*1.6/bs) - 0.5)*0.45;
 }
 
 void main(){
@@ -275,7 +308,8 @@ void main(){
   } else {
     // ---- 楕円筆触 + 等輝度色彩分割(絵側の層) ----
     float d0 = depthAt(q);
-    float ang = strokeAngle(q, p, t);
+    float bs = max(uBrush, 0.05);
+    float ang = strokeAngle(q, p, t, bs);
     vec2 sdir = vec2(cos(ang), sin(ang));
     vec2 perp = vec2(-sdir.y, sdir.x);
     vec2 s = vec2(dot(p, sdir), dot(p, perp));
@@ -285,12 +319,15 @@ void main(){
 
     // 筆の大きさ。原典は画面いっぱいの風景を想定した値で、カメラの近接被写体に
     // そのまま使うと筆が細かすぎて「ざらついた写真」にしか見えない。実行時に変えられるようにする
-    float bs = max(uBrush, 0.05);
     vec2 pitch = vec2(0.019, 0.0062) * bs;
     vec2 base = floor(s/pitch);
     float best = -1.0;
     vec2 bestC = (base + 0.5)*pitch;
     vec2 bestId = base;
+    // どの楕円にも入らない画素は、格子の素のセル中心に落ちる。これが格子に揃った
+    // 不連続 = 櫛状のギザギザした縁を作る。最も近い楕円を控えに取っておく
+    float nearQ = 1e9;
+    vec2 nearC = bestC, nearId = base;
     float fuzz = (vnoise(p*52.0/bs) - 0.5)*0.55;
     // 5x5 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
     for (int j = -2; j <= 2; j++)
@@ -309,7 +346,9 @@ void main(){
       q2 *= 1.0 + fuzz;
       float pr2 = hash21(cid + 5.1);
       if (q2 < 1.0 && pr2 > best){ best = pr2; bestC = ctr; bestId = cid; }
+      if (q2 < nearQ){ nearQ = q2; nearC = ctr; nearId = cid; }
     }
+    if (best < 0.0){ bestC = nearC; bestId = nearId; }   // 隙間は最寄りの筆で埋める
     vec2 pc = sdir*bestC.x + perp*bestC.y;
     vec2 qc = vec2(pc.x/asp + 0.5, pc.y + 0.5);
 
@@ -329,11 +368,13 @@ void main(){
     //
     // 色相を回すのをやめ、印象派の一次原則そのもの——「光は暖色、影は寒色」——で
     // 色温度の軸にだけずらす。これは元の色相が何であっても成立する。
-    float side = (h1r < 0.5) ? 0.0 : 1.0;              // 筆ごとに暖/寒を抽選
-    float bias = clamp((l0 - 0.45) * 1.6, -1.0, 1.0);  // 明るい筆ほど暖色に寄りやすい
-    float w = clamp(side + 0.30*bias, 0.0, 1.0);
+    // 二値で暖/寒に振ると、橙と青の斑になって「絵」ではなく「塗り分け」に見える。
+    // 連続分布にして、大半の筆はほとんど動かさず、少数だけ強く振れるようにする。
+    float u = h1r * 2.0 - 1.0;                         // -1..1 連続
+    float bias = clamp((l0 - 0.45) * 1.4, -1.0, 1.0);  // 明るい筆ほど暖色に寄りやすい
+    float w = clamp(0.5 + 0.5*u + 0.22*bias, 0.0, 1.0);
     vec3 tint = mix(COOL, WARM, w);
-    float amt = uSplit * (0.35 + 0.65*d) * (0.6 + 0.4*h2r);
+    float amt = uSplit * (0.35 + 0.65*d) * abs(u);     // |u| が小さい筆は素のまま
     col *= mix(vec3(1.0), tint, amt);
     // 色相のゆらぎは残すが、casts を作らない程度に小さく対称に
     col = hueRotate(col, (h2r - 0.5) * 0.14 * uSplit);
@@ -341,7 +382,9 @@ void main(){
     float satG = 1.18 + 0.28*d;         // 彩度ブーストも手前だけ
     col = mix(vec3(dot(col, LW)), col, satG + 0.30*(hash21(bestId + 13.0) - 0.5));
     col *= l0 / max(dot(col, LW), 1e-3);   // 輝度は保存(原典の思想はここで維持)
-    col *= 0.985 + 0.030*hash21(bestId + 9.7);
+    // 実際の絵では隣り合う筆は色相より**明度**が違う。原典の ±1.5% では
+    // 平らな面がのっぺりしたまま残るので、分割の強さに連動させて振る
+    col *= 1.0 + uSplit*0.20*(hash21(bestId + 9.7) - 0.5);
     col = clamp(col, 0.0, 1.6);
 
     // 絵の強さを 0..1 で混ぜられるようにしておく(比較用スライダ)

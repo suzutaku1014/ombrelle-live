@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 import glfw
 import numpy as np
 
@@ -240,7 +241,14 @@ def main() -> None:
                         "e2e_ms": round(meter.latency_ms, 1),
                         "energy": round(float(energy), 5),
                     }), indent=2) + "\n", encoding="utf-8")
-                print(f"saved {p} + {side.name}")
+                # 生のカメラフレームも残す。これがあれば Claude 側で
+                # --source shots/xxx_raw.png として同じ画で意匠を詰められる
+                if frame is not None:
+                    raw = p.with_name(p.stem + "_raw.png")
+                    cv2.imwrite(str(raw), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    print(f"saved {p} + {side.name} + {raw.name}")
+                else:
+                    print(f"saved {p} + {side.name}")
 
             if state.save:
                 state.save = False
