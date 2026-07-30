@@ -4,9 +4,19 @@ teacher (既製の Depth Anything V2 Small) と student (自作の蒸留モデ�
 **同一インターフェース**で差し替えられるようにしてある。実行中に `d` キーで
 切り替えて、絵の見え方と FPS を同じ画面で比べられる。これが蒸留の効果を語る土台。
 
-前処理は transformers の ImageProcessor を使わず cv2 で自前実装している。
-理由は、ImageProcessor が PIL を経由して 1 フレームあたり数 ms を食うため。
-リアルタイム経路では前処理も測定対象。
+前処理について (実測に基づく判断):
+
+  transformers の ImageProcessor は PIL を経由して数 ms 食うので使わない。
+  自前で cv2.resize(INTER_AREA) にしたが、これも 1280x720 → 392x224 の縮小だけで
+  **6.86 ms** かかっていた。student の forward が 6.5 ms なので、前処理が推論より重い。
+  縮小を GPU 側の antialias 付き bilinear に移して **1.27 ms**。
+  (cv2 の INTER_LINEAR も 1.11 ms だがエイリアスが出るので採らない)
+
+  → 「モデルを軽くする」前に「モデル以外を測る」。パラメータ数を 25 分の 1 にしても、
+    固定費の前処理が残っていれば体感は変わらない。
+
+学習時と推論時で前処理が違うとドメインがずれるので、collect も同じ resize を通す
+(`resize_uint8`)。この一致は精度の前提条件。
 """
 
 from __future__ import annotations
@@ -38,14 +48,44 @@ def pick_device() -> torch.device:
     return torch.device("cpu")
 
 
+_STATS: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _stats(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    key = str(device)
+    if key not in _STATS:
+        _STATS[key] = (
+            torch.tensor(IMAGENET_MEAN, device=device).view(1, 3, 1, 1),
+            torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1),
+        )
+    return _STATS[key]
+
+
+def resize_unit(rgb: np.ndarray, size: tuple[int, int], device: torch.device) -> torch.Tensor:
+    """RGB uint8 (H,W,3) → GPU 上で縮小した (1,3,h,w) の 0..1 テンソル。
+
+    縮小は antialias 付き bilinear。CPU の INTER_AREA と同等の品質で 5 倍速い。
+    """
+    w, h = size
+    t = torch.from_numpy(np.ascontiguousarray(rgb)).to(device)
+    t = t.permute(2, 0, 1)[None].float().div_(255.0)
+    if t.shape[-2:] != (h, w):
+        t = torch.nn.functional.interpolate(
+            t, size=(h, w), mode="bilinear", align_corners=False, antialias=True
+        )
+    return t
+
+
 def preprocess(rgb: np.ndarray, size: tuple[int, int], device: torch.device) -> torch.Tensor:
     """RGB uint8 (H,W,3) → 正規化済み (1,3,h,w) テンソル"""
-    w, h = size
-    img = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
-    x = img.astype(np.float32) / 255.0
-    x = (x - IMAGENET_MEAN) / IMAGENET_STD
-    x = np.transpose(x, (2, 0, 1))[None]
-    return torch.from_numpy(np.ascontiguousarray(x)).to(device)
+    mean, std = _stats(device)
+    return (resize_unit(rgb, size, device) - mean) / std
+
+
+def resize_uint8(rgb: np.ndarray, size: tuple[int, int], device: torch.device) -> np.ndarray:
+    """推論と同じ経路で縮小した uint8 画像。データ収集で保存する画像はこれを使う。"""
+    t = resize_unit(rgb, size, device).mul_(255.0).clamp_(0, 255)
+    return t[0].permute(1, 2, 0).to(torch.uint8).cpu().numpy()
 
 
 class TeacherDepth:

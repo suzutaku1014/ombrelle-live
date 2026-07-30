@@ -211,9 +211,15 @@ def main() -> None:
 
         if args.shot:
             print(f"saved {renderer.screenshot(args.shot)}")
+        el = time.perf_counter() - t0
+        # 単体のレイテンシではなく「描画と GPU を共有した状態で深度の場が
+        # 毎秒何回更新されたか」が体験に効く量。捨てた入力フレーム数も一緒に出す。
+        dhz = (depther.done / el) if depther is not None else 0.0
+        drop = depther.dropped if depther is not None else 0
         print(
-            f"frames={n} fps={meter.fps:.1f} e2e={meter.latency_ms:.1f}ms "
-            f"flow={meter.ms('flow'):.1f}ms depth={meter.ms('depth'):.1f}ms"
+            f"frames={n} elapsed={el:.1f}s fps={meter.fps:.1f} e2e={meter.latency_ms:.1f}ms "
+            f"flow={meter.ms('flow'):.1f}ms depth_infer={meter.ms('depth'):.1f}ms "
+            f"depth_updates={dhz:.1f}Hz dropped={drop}"
         )
     finally:
         cam.stop()
