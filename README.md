@@ -10,9 +10,12 @@ uv sync
 uv run python -m ombrelle.app --source cam:0 --depth teacher
 ```
 
-> **現状の注記**: 下の画像はすべて `--source synthetic` の検証用シーンによるもので、
-> 実写での意匠の追い込みは未実施。奥行きの手がかりと周期的な動きを意図的に入れた
-> 合成シーンを用意して、全段の動作と計測はそこで済ませてある ([docs/runbook.md](docs/runbook.md))。
+### 実写
+
+![real](docs/images/real_desk_compare.png)
+
+> 意匠の追い込みは進行中。下の合成シーンの画像は、全段の動作検証と計測に使った
+> 手続き生成のテスト台 (奥行きの手がかりと周期的な動きを意図的に入れてある)。
 
 | 生成した絵 (合成入力・深度駆動) | 花びらのオクルージョン |
 |---|---|

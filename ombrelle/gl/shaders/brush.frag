@@ -39,13 +39,16 @@ uniform float uHaze;       // 空気遠近の強さ
 uniform float uChroma;     // 全体の彩度ブースト(写真はモネより地味なので持ち上げる)
 uniform float uBrush;      // 筆の大きさ。これが「絵に見えるか」を最も強く決める
 uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/寒色側へ振り分ける量)
+uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。これで割ってから絵の色を決める
 
 #define PETALS 24
 
 const vec3 HAZE_COOL = vec3(0.86, 0.87, 0.94);
 const vec3 PINK_HAZE = vec3(1.03, 0.86, 0.88);
-const vec3 SHADOW_V  = vec3(0.30, 0.32, 0.48);   // 影は黒ではなく青紫
-const vec3 LIGHT_W   = vec3(1.00, 0.95, 0.84);   // 光は暖色へ
+// 影/光の色は「混ぜる色」ではなく「掛ける係数」として持つ。
+// 混色だと明度まで動いて絵が褪せる (下の grade() のコメント参照)
+const vec3 SHADOW_T  = vec3(0.72, 0.82, 1.18);   // 影は青紫へ倒す
+const vec3 LIGHT_T   = vec3(1.10, 1.02, 0.86);   // 光は暖色へ倒す
 const vec3 LW        = vec3(0.299, 0.587, 0.114);
 const vec3 WARM      = vec3(1.00, 0.82, 0.58);   // 光の側
 const vec3 COOL      = vec3(0.62, 0.75, 1.00);   // 影の側
@@ -88,7 +91,11 @@ float gustEnv(float t){
 vec2 img(vec2 q){ return vec2(q.x, 1.0 - q.y); }   // GL(y上) → 画像(y下)
 
 vec3 camAt(vec2 q, float lod){
-  return textureLod(uCam, img(clamp(q, 0.0, 1.0)), lod).rgb;
+  vec3 c = textureLod(uCam, img(clamp(q, 0.0, 1.0)), lod).rgb;
+  // 絵の色は「影は寒色・光は暖色」という相対的な決め方をしている。
+  // カメラのホワイトバランスが電球色に転んでいると、そこへ暖色を重ねることになり
+  // 白まで黄色くなる。照明の色かぶりを先に外してから絵の色を決める。
+  return c / max(uWhite, vec3(1e-3));
 }
 // 0=遠 1=近。未接続時は「下が手前」というダミーで筆触だけ先に検証できるようにする
 float depthAt(vec2 q){
@@ -123,10 +130,23 @@ vec2 windF(vec2 q, float t){
 // **黒を使わないこと**。暗部は青紫へ、明部は暖色へ振り分けて色で明暗を作る。
 vec3 grade(vec3 c){
   float l = dot(c, LW);
-  float sh = 1.0 - smoothstep(0.00, 0.38, l);
-  c = mix(c, mix(c, SHADOW_V, 0.60), sh);
-  float hi = smoothstep(0.60, 1.00, l);
-  c = mix(c, mix(c, LIGHT_W, 0.45), hi);
+
+  // 印象派の原則は「黒い絵具を使わない」であって「暗い値を使わない」ではない。
+  // 影を暗い青紫と**混色**すると明度まで一緒に上がり、絵全体が褪せる
+  // (実写で紙も机も中間調に潰れた)。色を掛けてから輝度を元に戻すことで、
+  // **色相だけを振って明度は動かさない**。
+  float sh = 1.0 - smoothstep(0.02, 0.42, l);
+  float hi = smoothstep(0.55, 1.00, l);
+  vec3 t = mix(vec3(1.0), SHADOW_T, sh*0.60);
+  t = mix(t, LIGHT_T, hi*0.38);
+  c *= t;
+  c *= l / max(dot(c, LW), 1e-3);
+
+  // 値の構造をむしろ強める。カメラの素材は絵より眠い
+  float lc = clamp(l, 0.0, 1.0);
+  float lS = mix(lc, lc*lc*(3.0 - 2.0*lc), 0.45);   // ゆるい S 字
+  c *= lS / max(l, 1e-3);
+
   // 写真の彩度はモネの絵より低い。輝度は保ったまま彩度だけ持ち上げる
   float l1 = dot(c, LW);
   c = mix(vec3(l1), c, uChroma);

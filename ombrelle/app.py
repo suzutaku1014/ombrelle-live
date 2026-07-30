@@ -21,6 +21,7 @@ import glfw
 import numpy as np
 
 from . import config as cfg
+from .color import WhiteBalance
 from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
@@ -122,12 +123,12 @@ def main() -> None:
     ap.add_argument("--cam-lod", type=float, default=2.0)
     ap.add_argument("--paint-mix", type=float, default=1.0,
                     help="0=グレーディングのみ 1=完全に絵")
-    ap.add_argument("--brush", type=float, default=1.8,
+    ap.add_argument("--brush", type=float, default=2.4,
                     help="筆の大きさ。1.0 が原典の値。カメラの近接被写体では大きめが要る")
-    ap.add_argument("--split", type=float, default=0.35,
+    ap.add_argument("--split", type=float, default=0.50,
                     help="色彩分割の強さ(暖色側/寒色側への振り分け)")
-    ap.add_argument("--haze", type=float, default=0.70)
-    ap.add_argument("--chroma", type=float, default=1.30)
+    ap.add_argument("--haze", type=float, default=0.35)
+    ap.add_argument("--chroma", type=float, default=1.35)
     ap.add_argument("--energy-floor", type=float, default=0.0,
                     help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
@@ -155,6 +156,7 @@ def main() -> None:
     glfw.set_key_callback(renderer.window, key_cb)
 
     flowf = None if args.no_flow else FlowField()
+    wb = WhiteBalance()
 
     depther = None
     if args.depth != "off":
@@ -178,6 +180,7 @@ def main() -> None:
             if frame is not None and seq != last_seq:
                 last_seq = seq
                 renderer.update_camera(frame)
+                wb.update(frame)
                 if flowf is not None:
                     s = time.perf_counter()
                     flowf.update(frame, stamp)
@@ -225,6 +228,7 @@ def main() -> None:
                 "uChroma": state.chroma,
                 "uBrush": state.brush,
                 "uSplit": state.split,
+                "uWhite": tuple(float(x) for x in wb.gain),
             })
             meter.add_latency(time.perf_counter() - stamp)
 
