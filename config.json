@@ -1,9 +1,9 @@
 {
   "haze": 0.35,
-  "chroma": 1.5,
+  "chroma": 1.35,
   "brush": 1.6,
-  "split": 0.5,
-  "inject": 0.2,
+  "split": 1.0,
+  "inject": 0.18,
   "flow_gain": 1.5,
   "cam_lod": 2.0,
   "paint_mix": 1.0,

@@ -198,13 +198,16 @@ vec3 divide(vec3 c, float ang, float sat){
 //   明るい面 → 暖色側、暗い面 → 寒色側
 // 注入量は元の彩度が低いほど大きく、中間調で最大にする
 // (実際の絵具も最高彩度は中間調にあり、白飛びと黒潰れでは彩度が落ちる)。
-vec3 inject(vec3 c, float amt){
+vec3 inject(vec3 c, float amt, float jit){
   float Y = dot(c, LW);
   vec2 v = vec2(c.r - Y, c.b - Y);
   float bias = clamp((Y - 0.45)*2.0, -1.0, 1.0);        // 明るいほど暖色へ
   float mid  = clamp(4.0*Y*(1.0 - Y), 0.0, 1.0);        // 中間調で最大
-  float lack = 1.0 - smoothstep(0.02, 0.16, length(v)); // 元が中性なほど強く
-  vec2 axis = normalize(vec2(0.62, -0.48));             // 暖色方向 (Cr+, Cb-)
+  // 元が有彩色でも温度差は残す。0 にすると顔や木で明暗の色分けが消える
+  float lack = 0.25 + 0.75*(1.0 - smoothstep(0.02, 0.16, length(v)));
+  // 注入の軸を筆ごとに散らす。単一の軸だと中性面が同じ 2 色の繰り返しになる
+  float a0 = -0.66 + jit*0.45;                          // 暖色方向のまわり ±0.45rad
+  vec2 axis = vec2(cos(a0), sin(a0));
   v += axis * bias * amt * mid * lack;
   float R = Y + v.x, B = Y + v.y;
   float G = (Y - LW.r*R - LW.b*B) / LW.g;
@@ -423,32 +426,32 @@ void main(){
     float h2r = hash21(bestId + 17.9);
 
     // ---- 色彩分割 ----
-    // 局所の色度を ±Δ に分解し、平均が元へ戻るよう 1/cos(Δ) 倍に伸ばす。
-    // どちらの側を引くかは輝度で偏らせる: 明るい筆は暖かい側、暗い筆は冷たい側。
-    // これが原典の「三族は非対称: 青側は深く、黄側はささやき」の一般化にあたる
-    // (原典は対象が緑だったので、その非対称性を固定角で書き下せた)。
+    // 役割を 2 段に分ける:
+    //   inject() … 「光は暖色・影は寒色」の法則。平均を動かしてよい(意図的な脚色)
+    //   divide() … 色彩分割そのもの。**平均は厳密に保存する**
+    // 以前は divide 側で輝度による暖寒の偏りも付けていたが、それをやると平均が
+    // 保存されず「色彩分割」の定義から外れる。担当を分けた。
+    if (uInject > 1e-3) col = inject(col, uInject, h2r*2.0 - 1.0);
+
     // 分離角は**筆の大きさに反比例**させる。
     // 光学混合は「筆が目の中で混ざる」ことが前提なので、大きい筆で強く分割すると
     // 混ざらずに色ノイズとして見える (スーラは点、モネは大きめの筆で弱い分割)。
     // 連動させることで uSplit は「目に見える揺らめきの量」という、
     // 筆サイズに依らない意味を持つ。
-    // 分割の前に中性面へ色を入れる (入れないと最も広い面で分割が空振りする)
-    if (uInject > 1e-3) col = inject(col, uInject);
-
     float dlt = uSplit * (0.30 + 0.70*d) * 1.15 / max(bs, 0.4);
     dlt = min(dlt, 1.05);                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
     if (dlt > 1e-3){
-      float sat = 1.0 / max(cos(dlt), 0.30);
-      vec3 cP = divide(col, +dlt, sat);
-      vec3 cM = divide(col, -dlt, sat);
-      // 暖かい方 = 赤方向が強く青方向が弱い方
-      bool pWarm = (cP.r - cP.b) > (cM.r - cM.b);
-      vec3 warmC = pWarm ? cP : cM;
-      vec3 coolC = pWarm ? cM : cP;
-      float bias = clamp((l0 - 0.45) * 1.6, -1.0, 1.0);
-      col = (h1r < 0.5 + 0.30*bias) ? warmC : coolC;
+      // 分離角は筆ごとに**連続分布**から引く。
+      // ±Δ の二値にすると局所色ごとに色が 2 つしか現れず、
+      // 「緑と赤が同じ色ばかり」に見える (実写で指摘された)。
+      //
+      // θ を [-Δ, Δ] の一様分布から引くと平均は sin(Δ)/Δ 倍に縮むので、
+      // **Δ/sin(Δ) 倍**に伸ばせば平均が厳密に元へ戻る (二値の 1/cos(Δ) に対応)。
+      float th  = (h1r*2.0 - 1.0) * dlt;
+      float sat = dlt / max(sin(dlt), 1e-3);
+      col = divide(col, th, sat);
       // 補色の差し色: 暗部にごく少数だけ混ぜる(影に反対色を置く印象派の常套)
-      if (h2r < 0.07*uSplit && l0 < 0.45) col = mix(col, divide(col, 3.14159, 0.60), 0.55);
+      if (h2r < 0.05*uSplit && l0 < 0.42) col = mix(col, divide(col, 3.14159, 0.60), 0.45);
     }
 
     // 彩度: grade() で既に uChroma を掛けている。原典の satG(1.18-1.46) を
