@@ -22,11 +22,27 @@
 
 Claude 側でやること (再開時のチェックリスト):
 
-1. `uv run python -c "import cv2; c=cv2.VideoCapture(0,cv2.CAP_AVFOUNDATION); print(c.isOpened()); c.release()"` で権限を確認
-2. `uv run python -m ombrelle.app --source cam:0 --depth teacher --view 2 --frames 300 --shot shots/real_depth.png` で深度を目視
-3. 同様に `--view 3`(フロー) `--view 0`(筆触) を撮って、合成シーンとの差を見る
-4. 実写で崩れる箇所を直し、意匠の既定値 (haze / chroma / flow_gain / cam_lod) を詰める
+1. **カメラは Claude から使えない (下記「決着済み」参照)。実写の実行はユーザーに依頼する**
+2. ユーザーが `s` / `p` で残した `shots/*.json` と `config.json` を読む
+3. 数値を既定値に反映し、スクショを見て次の調整を提案する
+4. 動画ファイル (`--source data/*.mov`) なら Claude 側で回せる。測定はそちらで行う
 5. STEP 3 以降 (クリップ撮影 → データ収集 → 再学習 → 評価) へ
+
+### 決着済み: Claude のプロセスからカメラは使えない (2026-07-30 検証)
+
+Claude.app にカメラ権限を付与し、Claude.app を再起動しても解決しなかった。
+AVFoundation に直接要求させた結果:
+
+```
+before: 0 notDetermined
+callback: False          ← ダイアログを出さずに即座に拒否
+after:  0 notDetermined  ← 記録すら作られない
+devices: ['MacBook Pro Camera', '鈴木拓海のiPhone Camera']   ← 列挙はできる
+```
+
+TCC が要求元アプリを特定できないプロセスの挙動。**拒否されているのではなく
+許可を求める資格が無い**ので、設定に該当項目が現れず、切り替えでも再起動でも直らない。
+このやり取りを再度試さないこと。実写の実行は必ずユーザーの `Terminal.app` から。
 
 初日時点の状態: M0〜M6 完了、合成シーンで全段検証済み、コミット済み。
 未解決の宿題は devlog の「未着手 / 宿題」を参照。
@@ -235,6 +251,7 @@ ffmpeg -i ~/Desktop/screen.mov -t 10 -vf "fps=15,scale=720:-1:flags=lanczos,spli
 |---|---|
 | カメラ許可のダイアログが出ない | Terminal.app から起動しているか確認。システム設定 → プライバシーとセキュリティ → カメラ に `ターミナル` があるか見る |
 | ウィンドウが真っ黒 | 別アプリがカメラを占有している。Zoom / Photo Booth を閉じる |
+| もっと良い画で撮りたい | iPhone が Continuity Camera として見えている。`--source cam:1` で切り替わる (内蔵より高画質・構図も作りやすい) |
 | view `2` の深度が激しくチラつく | まさに測りたい現象。`s` でスクショを撮って報告 |
 | fps が 30 を割る | `--render-width 960 --render-height 540` で内部解像度を下げる |
 | 絵が「写真にフィルタ」に見える | `m` で彩度、`.` で筆のぼかしを上げる。それでも駄目なら報告（`grade()` の設計を見直します） |
