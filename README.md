@@ -12,18 +12,31 @@ uv run python -m ombrelle.app --source cam:0 --depth teacher
 
 ### 実写
 
-![real](docs/images/real_desk_compare.png)
+同じ設定で 3 枚。白い壁 / 暗い天井 / 机と条件が違っても破綻しない。
 
-> 意匠の追い込みは進行中。下の合成シーンの画像は、全段の動作検証と計測に使った
-> 手続き生成のテスト台 (奥行きの手がかりと周期的な動きを意図的に入れてある)。
-
-| 生成した絵 (合成入力・深度駆動) | 花びらのオクルージョン |
+| | |
 |---|---|
-| ![paint](docs/images/04_paint_depth.png) | ![petals](docs/images/05_petals_occlusion.png) |
+| ![p1](docs/images/real_portrait_wall.png) | ![p2](docs/images/real_portrait_ceiling.png) |
+
+![desk](docs/images/real_desk.png)
+
+`brush 1.6 / split 0.60 / chroma 1.30 / inject 0.28 / haze 0.35`
+
+### 検証用の合成シーン
+
+奥行きの手がかりと周期的な動きを意図的に入れた手続き生成のテスト台。
+カメラが無い環境でも全段 (入力 → 深度 → フロー → 筆触 → オクルージョン) を検証できる。
 
 | 入力 | 深度 (teacher) | フローの場 |
 |---|---|---|
 | ![in](docs/images/00_input_synthetic.png) | ![depth](docs/images/03_depth.png) | ![flow](docs/images/02_flow_field.png) |
+
+| 深度で駆動した筆触 | 花びらのオクルージョン |
+|---|---|
+| ![paint](docs/images/04_paint_depth.png) | ![petals](docs/images/05_petals_occlusion.png) |
+
+> **未完**: 「人が動くと筆触が傾ぐ」という中心的な主張は、まだ動画で示せていない。
+> 静止画での検証しか無い。詳細は [docs/devlog.md](docs/devlog.md) の「未着手 / 宿題」。
 
 ---
 

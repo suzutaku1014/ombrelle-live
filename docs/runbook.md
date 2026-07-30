@@ -3,13 +3,7 @@
 初日で合成シーンによる検証は終わっている。ここからは**実写**に移す作業。
 各ステップに「何を見るか」と「Claude に報告すること」を書いた。報告があれば私が続きを実装する。
 
-所要時間の目安: STEP 0〜2 で 30 分、STEP 3〜6 で 2 時間半（うち学習の待ち 1 時間）。
-
----
-
-## STEP 0 — ディスクを空ける ✅ 完了
-
-2.1 GB → **29 GB 空き**。データ収集に十分。
+所要時間の目安: STEP 1〜2 で 30 分、STEP 3〜6 で 2 時間半（うち学習の待ち 1 時間）。
 
 ---
 
@@ -37,7 +31,7 @@ AVFoundation に直接要求させた結果:
 before: 0 notDetermined
 callback: False          ← ダイアログを出さずに即座に拒否
 after:  0 notDetermined  ← 記録すら作られない
-devices: ['MacBook Pro Camera', '鈴木拓海のiPhone Camera']   ← 列挙はできる
+devices: ['MacBook Pro Camera', '<iPhone> Camera']   ← 列挙はできる
 ```
 
 TCC が要求元アプリを特定できないプロセスの挙動。**拒否されているのではなく
@@ -55,7 +49,7 @@ TCC が要求元アプリを特定できないプロセスの挙動。**拒否�
 `Terminal.app`（または iTerm）から実行すると、そのアプリに対して権限ダイアログが正しく出ます。
 
 ```bash
-cd /Users/suzukitakumi/magic-effect
+cd ~/ombrelle-live
 uv run python -m ombrelle.app --source cam:0 --depth teacher
 ```
 
@@ -266,7 +260,7 @@ ffmpeg -i ~/Desktop/screen.mov -t 10 -vf "fps=15,scale=720:-1:flags=lanczos,spli
 ## 一気にやるなら（コピペ用）
 
 ```bash
-cd /Users/suzukitakumi/magic-effect
+cd ~/ombrelle-live
 
 # STEP 1-2  (意匠が決まったら s でスクショ、p で config.json に保存)
 uv run python -m ombrelle.app --source cam:0 --depth teacher
