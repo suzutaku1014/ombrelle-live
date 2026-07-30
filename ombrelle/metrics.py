@@ -78,6 +78,7 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str) -> list[str
         f"depth {depth_source:<9} infer {meter.ms('depth'):5.1f} ms   "
         f"flow {meter.ms('flow'):4.1f} ms",
         f"energy {energy:6.4f}   flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}",
-        f"haze {state.haze:4.2f}   chroma {state.chroma:4.2f}   paint {state.paint_mix:4.2f}",
-        "0-3 view  s shot  p save  d depth  [ ]gain  , .lod  k lhaze  n mchroma",
+        f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  split {state.split:4.2f}",
+        "v b brush   t y split   k l haze   n m chroma   , . lod   [ ] gain",
+        "0-3 view   s shot   p save   d depth   - = paint   h hud   q quit",
     ]

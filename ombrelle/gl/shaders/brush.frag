@@ -37,6 +37,8 @@ uniform float uEnergy;     // フローのエネルギー 0..1 くらい
 uniform float uPaintMix;   // 0=グレーディングのみ 1=完全に絵
 uniform float uHaze;       // 空気遠近の強さ
 uniform float uChroma;     // 全体の彩度ブースト(写真はモネより地味なので持ち上げる)
+uniform float uBrush;      // 筆の大きさ。これが「絵に見えるか」を最も強く決める
+uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/寒色側へ振り分ける量)
 
 #define PETALS 24
 
@@ -45,6 +47,8 @@ const vec3 PINK_HAZE = vec3(1.03, 0.86, 0.88);
 const vec3 SHADOW_V  = vec3(0.30, 0.32, 0.48);   // 影は黒ではなく青紫
 const vec3 LIGHT_W   = vec3(1.00, 0.95, 0.84);   // 光は暖色へ
 const vec3 LW        = vec3(0.299, 0.587, 0.114);
+const vec3 WARM      = vec3(1.00, 0.82, 0.58);   // 光の側
+const vec3 COOL      = vec3(0.62, 0.75, 1.00);   // 影の側
 
 // ---------------------------------------------------------------- 原典から無改変
 float hash21(vec2 p){
@@ -279,12 +283,15 @@ void main(){
     // タッチの遠近法: 手前ほど大きい筆
     float szG = mix(0.50, 1.30, clamp(d0, 0.0, 1.0));
 
-    vec2 pitch = vec2(0.019, 0.0062);
+    // 筆の大きさ。原典は画面いっぱいの風景を想定した値で、カメラの近接被写体に
+    // そのまま使うと筆が細かすぎて「ざらついた写真」にしか見えない。実行時に変えられるようにする
+    float bs = max(uBrush, 0.05);
+    vec2 pitch = vec2(0.019, 0.0062) * bs;
     vec2 base = floor(s/pitch);
     float best = -1.0;
     vec2 bestC = (base + 0.5)*pitch;
     vec2 bestId = base;
-    float fuzz = (vnoise(p*52.0) - 0.5)*0.55;
+    float fuzz = (vnoise(p*52.0/bs) - 0.5)*0.55;
     // 5x5 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
     for (int j = -2; j <= 2; j++)
     for (int i = -2; i <= 2; i++){
@@ -292,8 +299,8 @@ void main(){
       vec2 rnd = vec2(hash21(cid + 1.7), hash21(cid + 7.3));
       vec2 ctr = (cid + 0.5 + (rnd - 0.5)*0.9)*pitch;
       float sz = (0.65 + 1.00*hash21(cid + 8.8))*szG;
-      float aa = 0.0155*sz;
-      float bb = 0.0046*(0.7 + 0.8*hash21(cid + 4.4))*min(sz, 1.6);
+      float aa = 0.0155*sz*bs;
+      float bb = 0.0046*(0.7 + 0.8*hash21(cid + 4.4))*min(sz, 1.6)*bs;
       float rr2 = (hash21(cid + 2.2) - 0.5)*0.55;
       float cr2 = cos(rr2), sr2 = sin(rr2);
       vec2 dd = s - ctr;
@@ -312,17 +319,28 @@ void main(){
 
     float d = depthAt(qc);
     float l0 = dot(col, LW);
-    // 色彩分割: 三族に量子化(青緑/緑/黄)。非対称で、赤方向には決して届かない
     float h1r = hash21(bestId + 3.1);
     float h2r = hash21(bestId + 17.9);
-    float fam = floor(h1r*3.0) - 1.0;
-    float famG = ((fam < 0.0) ? -0.58 : fam*0.16) + (h2r - 0.5)*0.12;
-    famG *= 0.55 + 0.45*d;              // 霞んだ遠景は回転させない(土色の発生源)
-    col = hueRotate(col, famG);
+
+    // ---- 色彩分割 ----
+    // 原典は緑を三族(青緑/緑/黄)に量子化していた。あれは対象が草だから成立する設計で、
+    // 固定の色相回転を任意の色相に掛けると破綻する。実写では肌(橙)が -0.58rad 回されて
+    // マゼンタに転び、ノイズにしか見えなかった。
+    //
+    // 色相を回すのをやめ、印象派の一次原則そのもの——「光は暖色、影は寒色」——で
+    // 色温度の軸にだけずらす。これは元の色相が何であっても成立する。
+    float side = (h1r < 0.5) ? 0.0 : 1.0;              // 筆ごとに暖/寒を抽選
+    float bias = clamp((l0 - 0.45) * 1.6, -1.0, 1.0);  // 明るい筆ほど暖色に寄りやすい
+    float w = clamp(side + 0.30*bias, 0.0, 1.0);
+    vec3 tint = mix(COOL, WARM, w);
+    float amt = uSplit * (0.35 + 0.65*d) * (0.6 + 0.4*h2r);
+    col *= mix(vec3(1.0), tint, amt);
+    // 色相のゆらぎは残すが、casts を作らない程度に小さく対称に
+    col = hueRotate(col, (h2r - 0.5) * 0.14 * uSplit);
 
     float satG = 1.18 + 0.28*d;         // 彩度ブーストも手前だけ
     col = mix(vec3(dot(col, LW)), col, satG + 0.30*(hash21(bestId + 13.0) - 0.5));
-    col *= l0 / max(dot(col, LW), 1e-3);   // 輝度は保存
+    col *= l0 / max(dot(col, LW), 1e-3);   // 輝度は保存(原典の思想はここで維持)
     col *= 0.985 + 0.030*hash21(bestId + 9.7);
     col = clamp(col, 0.0, 1.6);
 

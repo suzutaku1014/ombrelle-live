@@ -1,0 +1,8 @@
+{
+  "haze": 0.1,
+  "chroma": 0.8,
+  "flow_gain": 1.5,
+  "cam_lod": 3.5,
+  "paint_mix": 1.0,
+  "energy_floor": 0.0
+}

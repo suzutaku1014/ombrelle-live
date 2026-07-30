@@ -34,6 +34,8 @@ class State:
         self.cam_lod = args.cam_lod
         self.haze = args.haze
         self.chroma = args.chroma
+        self.brush = args.brush
+        self.split = args.split
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -75,6 +77,14 @@ def make_key_callback(state: State):
             state.chroma = max(0.5, state.chroma - 0.05)
         elif key == glfw.KEY_M:
             state.chroma = min(2.5, state.chroma + 0.05)
+        elif key == glfw.KEY_V:
+            state.brush = max(0.2, state.brush - 0.1)
+        elif key == glfw.KEY_B:
+            state.brush = min(6.0, state.brush + 0.1)
+        elif key == glfw.KEY_T:
+            state.split = max(0.0, state.split - 0.05)
+        elif key == glfw.KEY_Y:
+            state.split = min(1.5, state.split + 0.05)
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -111,6 +121,10 @@ def main() -> None:
     ap.add_argument("--cam-lod", type=float, default=2.0)
     ap.add_argument("--paint-mix", type=float, default=1.0,
                     help="0=グレーディングのみ 1=完全に絵")
+    ap.add_argument("--brush", type=float, default=1.8,
+                    help="筆の大きさ。1.0 が原典の値。カメラの近接被写体では大きめが要る")
+    ap.add_argument("--split", type=float, default=0.35,
+                    help="色彩分割の強さ(暖色側/寒色側への振り分け)")
     ap.add_argument("--haze", type=float, default=0.70)
     ap.add_argument("--chroma", type=float, default=1.30)
     ap.add_argument("--energy-floor", type=float, default=0.0,
@@ -208,6 +222,8 @@ def main() -> None:
                 "uPaintMix": state.paint_mix,
                 "uHaze": state.haze,
                 "uChroma": state.chroma,
+                "uBrush": state.brush,
+                "uSplit": state.split,
             })
             meter.add_latency(time.perf_counter() - stamp)
 
