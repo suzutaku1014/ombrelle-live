@@ -213,7 +213,7 @@ ffmpeg -i ~/Desktop/screen.mov -t 10 -vf "fps=15,scale=720:-1:flags=lanczos,spli
 
 | 症状 | 対処 |
 |---|---|
-| `opened: False` のまま | Claude.app を再起動（STEP 1 の注意書き） |
+| カメラ許可のダイアログが出ない | Terminal.app から起動しているか確認。システム設定 → プライバシーとセキュリティ → カメラ に `ターミナル` があるか見る |
 | ウィンドウが真っ黒 | 別アプリがカメラを占有している。Zoom / Photo Booth を閉じる |
 | view `2` の深度が激しくチラつく | まさに測りたい現象。`s` でスクショを撮って報告 |
 | fps が 30 を割る | `--render-width 960 --render-height 540` で内部解像度を下げる |
@@ -228,10 +228,7 @@ ffmpeg -i ~/Desktop/screen.mov -t 10 -vf "fps=15,scale=720:-1:flags=lanczos,spli
 ```bash
 cd /Users/suzukitakumi/magic-effect
 
-# STEP 1
-uv run python -c "import cv2; c=cv2.VideoCapture(0,cv2.CAP_AVFOUNDATION); print('opened:', c.isOpened()); c.release()"
-
-# STEP 2
+# STEP 1-2  (意匠が決まったら s でスクショ、p で config.json に保存)
 uv run python -m ombrelle.app --source cam:0 --depth teacher
 
 # STEP 4
