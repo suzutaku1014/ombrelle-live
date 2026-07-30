@@ -39,6 +39,8 @@ class State:
         self.brush = args.brush
         self.split = args.split
         self.inject = args.inject
+        self.compose = 1.0 if args.compose else 0.0
+        self.stand = args.stand
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -92,6 +94,12 @@ def make_key_callback(state: State):
             state.inject = max(0.0, state.inject - 0.02)
         elif key == glfw.KEY_G:
             state.inject = min(0.6, state.inject + 0.02)
+        elif key == glfw.KEY_C:
+            state.compose = 0.0 if state.compose > 0.5 else 1.0
+        elif key == glfw.KEY_R:
+            state.stand = max(0.2, state.stand - 0.05)
+        elif key == glfw.KEY_U:
+            state.stand = min(1.0, state.stand + 0.05)
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -135,6 +143,10 @@ def main() -> None:
                          "筆を変えても見た目の揺らめき量は保たれる")
     ap.add_argument("--inject", type=float, default=0.28,
                     help="中性面への色の注入量。白い壁を暖色と寒色で描くための量")
+    ap.add_argument("--compose", action="store_true",
+                    help="人物をモネ風の風景の中へ合成する (実行中は c キー)")
+    ap.add_argument("--stand", type=float, default=0.75,
+                    help="合成時に人物が立つ奥行き 0=遠 1=手前")
     ap.add_argument("--haze", type=float, default=0.35)
     ap.add_argument("--chroma", type=float, default=1.30)
     ap.add_argument("--energy-floor", type=float, default=0.0,
@@ -166,6 +178,11 @@ def main() -> None:
     flowf = None if args.no_flow else FlowField()
     wb = WhiteBalance()
 
+    segger = None
+    if args.compose:
+        from .segment import SegmentWorker
+        segger = SegmentWorker().start()
+
     depther = None
     if args.depth != "off":
         from .depth import DepthWorker
@@ -196,6 +213,8 @@ def main() -> None:
                     renderer.update_flow(flowf.field)
                 if depther is not None:
                     depther.submit(frame)
+                if segger is not None:
+                    segger.submit(frame)
 
             if depther is not None:
                 d = depther.latest()
@@ -203,6 +222,12 @@ def main() -> None:
                     latest_depth = d
                     renderer.update_depth(d)
                     meter.add_stage("depth", depther.last_infer_s)
+
+            if segger is not None:
+                mt = segger.latest()
+                if mt is not None:
+                    renderer.update_matte(mt)
+                    meter.add_stage("seg", segger.last_infer_s)
 
             energy = flowf.energy if flowf is not None else 0.0
             energy = max(energy, args.energy_floor)
@@ -237,6 +262,8 @@ def main() -> None:
                 "uBrush": state.brush,
                 "uSplit": state.split,
                 "uInject": state.inject,
+                "uCompose": state.compose,
+                "uStand": state.stand,
                 "uWhite": tuple(float(x) for x in wb.gain),
             })
             meter.add_latency(time.perf_counter() - stamp)
@@ -287,6 +314,8 @@ def main() -> None:
         cam.stop()
         if depther is not None:
             depther.stop()
+        if segger is not None:
+            segger.stop()
         renderer.close()
 
 

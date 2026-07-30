@@ -94,6 +94,7 @@ class Renderer:
         self.cam_tex: moderngl.Texture | None = None
         self.depth_tex: moderngl.Texture | None = None
         self.flow_tex: moderngl.Texture | None = None
+        self.matte_tex: moderngl.Texture | None = None
         self.hud_tex: moderngl.Texture | None = None
         self._hud_on = False
 
@@ -133,6 +134,18 @@ class Renderer:
             self.flow_tex.repeat_x = False
             self.flow_tex.repeat_y = False
         self.flow_tex.write(np.ascontiguousarray(flow.astype("f2")))
+
+    def update_matte(self, matte: np.ndarray) -> None:
+        """matte: (h, w) float, 人物 1 / 背景 0"""
+        h, w = matte.shape[:2]
+        if self.matte_tex is None or self.matte_tex.size != (w, h):
+            if self.matte_tex is not None:
+                self.matte_tex.release()
+            self.matte_tex = self.ctx.texture((w, h), 1, dtype="f2")
+            self.matte_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self.matte_tex.repeat_x = False
+            self.matte_tex.repeat_y = False
+        self.matte_tex.write(np.ascontiguousarray(matte.astype("f2")))
 
     def update_hud(self, rgba: np.ndarray | None) -> None:
         if rgba is None:
@@ -190,6 +203,10 @@ class Renderer:
             self.brush["uFlow"] = 2
         self.angle_tex.use(3)
         self.brush["uAngle"] = 3
+        u["uHasMatte"] = 1.0 if self.matte_tex is not None else 0.0
+        if self.matte_tex is not None:
+            self.matte_tex.use(4)
+            self.brush["uMatte"] = 4
 
         for k, v in u.items():
             if k in self.brush:

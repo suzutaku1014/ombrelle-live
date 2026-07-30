@@ -60,6 +60,8 @@ def main() -> None:
     ap.add_argument("--cols", type=int, default=3)
     ap.add_argument("--out", default="shots/sweep.png")
     ap.add_argument("--tiles", default="", help="個別タイルも保存するディレクトリ")
+    ap.add_argument("--compose", action="store_true")
+    ap.add_argument("--stand", type=float, default=0.75)
     args = ap.parse_args()
 
     axes: dict[str, list[float]] = {}
@@ -90,6 +92,11 @@ def main() -> None:
     flowf = FlowField()
     flowf.update(frame, 0.0)
     flowf.update(frame, 1 / 60)   # 静止画なのでフローは 0。既定の風だけが残る
+
+    if args.compose:
+        from ombrelle.segment import PersonSegmenter
+        renderer.update_matte(PersonSegmenter().infer(frame))
+        print("matte ready")
 
     depth_arr = None
     if args.depth != "off":
@@ -128,6 +135,7 @@ def main() -> None:
             "uHaze": cfg["haze"], "uChroma": cfg["chroma"],
             "uBrush": cfg["brush"], "uSplit": cfg["split"], "uInject": cfg["inject"],
             "uWhite": tuple(float(x) for x in wb.gain),
+            "uCompose": 1.0 if args.compose else 0.0, "uStand": args.stand,
         })
         raw = renderer.fbo.read(components=3, alignment=1)
         img = np.flipud(np.frombuffer(raw, np.uint8).reshape(args.height, args.width, 3))

@@ -42,6 +42,10 @@ uniform float uBrush;      // 筆の大きさ。これが「絵に見えるか�
 uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/寒色側へ振り分ける量)
 uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。これで割ってから絵の色を決める
 uniform float uInject;     // 中性面への色の注入量。分割は平均を保存するので彩度は増えない
+uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
+uniform float uHasMatte;
+uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
+uniform float uStand;      // 合成時に人物が立つ奥行き
 
 #define PETALS 24
 
@@ -52,6 +56,14 @@ const vec3 PINK_HAZE = vec3(1.03, 0.86, 0.88);
 const vec3 SHADOW_T  = vec3(0.72, 0.82, 1.18);   // 影は青紫へ倒す
 const vec3 LIGHT_T   = vec3(1.10, 1.02, 0.86);   // 光は暖色へ倒す
 const vec3 LW        = vec3(0.299, 0.587, 0.114);
+const vec3 HAZE_WARM = vec3(1.00, 0.93, 0.82);
+const vec3 SKY_ZEN   = vec3(0.46, 0.64, 0.94);   // 青は青く
+const vec3 SKY_HOR   = vec3(0.99, 0.95, 0.90);   // 地平は白へ
+const vec3 GRASS_SUN = vec3(0.55, 0.66, 0.26);
+const vec3 GRASS_MID = vec3(0.34, 0.50, 0.28);
+const vec3 GRASS_SHD = vec3(0.18, 0.31, 0.32);
+const vec3 CLOUD_LIT = vec3(1.00, 0.98, 0.95);
+const vec3 CLOUD_SHD = vec3(0.72, 0.76, 0.90);
 const vec3 WARM      = vec3(1.00, 0.82, 0.58);   // 光の側
 const vec3 COOL      = vec3(0.62, 0.75, 1.00);   // 影の側
 
@@ -258,6 +270,98 @@ vec3 inject(vec3 c, float amt, float jit){
   return vec3(R, G, B);
 }
 
+
+// ---------------------------------------------------------------- モネ風の風景
+// reference/ombrelle_v11_3.frag の renderScene() から**風景だけ**を移植した。
+// 花びらと光溜まりは移植していない。こちらには既にフロー(人の動き)で駆動する版があり、
+// 二重に持つ意味がないため。
+//
+// 草の揺れには原典の解析的な風ではなく、**このプログラムの windF()**(= 人の動き)を使う。
+// これで「人が動くと、絵の中の草と雲が動く」が成立する。
+float crest(float x){
+  return 0.24 + 0.10*exp(-pow((x - 0.58)/0.30, 2.0))
+       + 0.008*sin(x*7.0 + 1.3) + 0.005*sin(x*17.0 + 4.0);
+}
+float farRidge(float x){
+  return 0.252 + 0.014*sin(x*2.6 + 2.0) + 0.007*sin(x*7.3 + 1.0);
+}
+float cloudField(vec2 q){
+  vec2 pp = vec2(q.x*2.1, q.y*3.4) + normalize(vec2(-1.0, 0.35))*uAdv*0.075;
+  float f = (fbm2(pp*1.6) + 0.35*fbm2(pp*4.1 + 7.0)) / 1.35;
+  vec2 d1 = vec2((q.x - 0.32)*0.60, (q.y - 0.76)*1.1);
+  vec2 d2 = vec2((q.x - 0.78)*0.75, (q.y - 0.52)*1.3);
+  float mass = 1.15*exp(-dot(d1,d1)*1.6) + 0.9*exp(-dot(d2,d2)*2.0);
+  float veil = 0.30*smoothstep(0.30, 0.90, q.y);
+  return smoothstep(0.40, 0.72, f) * (mass + veil);
+}
+
+// 風景の深度。0=遠 1=近 という本プログラムの約束に合わせる
+// (原典の草の depth は「稜線=0 手前=1」で、既に同じ向きだった)
+float sceneDepth(vec2 q){
+  float cr = crest(q.x);
+  if (q.y > cr) return 0.0;                       // 空は最遠
+  return clamp((cr - q.y)/max(cr, 1e-3), 0.0, 1.0);
+}
+
+vec3 ombrelleScene(vec2 q, float t){
+  float asp = uRes.x / uRes.y;
+  vec2 rd = normalize(vec2((q.x - 0.5)*asp, q.y - 0.24) + vec2(1e-4));
+  float sunAmt = pow(max(dot(rd, normalize(vec2(0.88, 0.30))), 0.0), 7.0);
+  vec3 haze = mix(HAZE_COOL, HAZE_WARM, clamp(0.22 + sunAmt, 0.0, 1.0));
+  haze = mix(haze, PINK_HAZE, 0.25);
+
+  vec3 col = mix(SKY_HOR, SKY_ZEN, smoothstep(0.22, 1.05, q.y));
+  col += vec3(0.20, 0.12, 0.03) * sunAmt * 0.5;
+
+  float cd  = cloudField(q);
+  float cd2 = cloudField(q + vec2(0.020, 0.012));
+  float lit = clamp(0.5 + (cd - cd2)*4.5, 0.0, 1.0);
+  col = mix(col, mix(mix(CLOUD_SHD, CLOUD_LIT, lit), haze, 0.15), clamp(cd*1.4, 0.0, 0.97));
+
+  float rr = farRidge(q.x);
+  vec3 ridge = mix(mix(GRASS_MID, vec3(0.52, 0.60, 0.62), 0.5), haze, 0.72);
+  col = mix(col, ridge, smoothstep(rr + 0.008, rr - 0.012, q.y)*0.9);
+
+  float cr = crest(q.x);
+  vec2 wCr = windF(vec2(q.x, cr), t);            // ← 人の動きが草を揺らす
+  float rise = max(q.y - cr, 0.0);
+  float comb = vnoise(vec2(q.x*asp*150.0 - wCr.x*rise*900.0, 3.7));
+  comb = max(comb, vnoise(vec2((q.x*asp*150.0 - wCr.x*rise*900.0)*0.47 + 11.0, 8.1)));
+  float bladeH = 0.008 + 0.050*comb*comb;
+  float edge = smoothstep(cr + bladeH + 0.003, cr + bladeH - 0.005, q.y);
+  if (edge > 0.001){
+    float dep = sceneDepth(q);
+    float sway = wCr.x * mix(0.40, 0.03, dep);
+    float scale = mix(190.0, 60.0, dep);
+    vec2 sp = vec2(q.x*asp + sway, q.y);
+    float tex = fbm2(vec2(sp.x*scale*0.85, sp.y*scale*0.10))*0.65
+              + vnoise(vec2(sp.x*scale*1.5, sp.y*scale*0.12))*0.50;
+    float litG = clamp(0.20 + 0.42*(1.0 - dep) + 0.38*tex + 0.22*smoothstep(0.05, 0.95, q.x), 0.0, 1.0);
+    vec3 g = mix(GRASS_SHD, GRASS_MID, smoothstep(0.0, 0.45, litG));
+    g = mix(g, GRASS_SUN, smoothstep(0.45, 0.92, litG));
+    g = mix(g, GRASS_SHD, smoothstep(0.35, 1.0, q.x)*smoothstep(0.30, 0.02, q.y)*0.60);
+    col = mix(col, g, edge);
+  }
+  return col;
+}
+
+// 人物を絵の光へ合わせ直す。
+// 人物は部屋の光(電球色や蛍光灯)で撮られていて、絵の中は屋外の日向。
+// 光源が違うまま貼ると「切り抜いて置いた」感じが抜けない。
+// 明部は日向の色、暗部は空からの回り込みの色へ倒す。輝度は保存する。
+vec3 relight(vec3 c){
+  float l = dot(c, LW);
+  const vec3 SUN = vec3(1.08, 1.00, 0.86);
+  const vec3 SKY = vec3(0.78, 0.88, 1.14);
+  c *= mix(SKY, SUN, smoothstep(0.25, 0.75, l));
+  return c * (l / max(dot(c, LW), 1e-3));
+}
+
+float matteAt(vec2 q){
+  if (uHasMatte < 0.5 || uCompose < 0.5) return 1.0;   // 合成しないなら全部が「人物」= 現実
+  return clamp(texture(uMatte, img(clamp(q, 0.0, 1.0))).r, 0.0, 1.0);
+}
+
 // ---------------------------------------------------------------- 花びら
 // 原典は空席(SEAT)から生まれ風下へ散った。ここでは「動きの重心」から生まれる。
 // 生まれた瞬間は手前、時間とともに奥へ沈む → 人物の背後へ回り込む(オクルージョン)。
@@ -303,11 +407,33 @@ vec3 petals(vec3 col, vec2 q, float sceneD, float t){
 
 // ---------------------------------------------------------------- 物理の層
 // 原典の renderScene() に相当。一筆が代表する「現実の一点の色」。
+// 合成後の深度。人物と風景を**1 本の深度場**にまとめる。
+// こうしないと、筆サイズ・空気遠近・花びらのオクルージョンが人物と丘で別々に
+// 振る舞い、境界が見える。
+float depthComposite(vec2 q){
+  float m = matteAt(q);
+  if (uCompose < 0.5) return depthAt(q);
+  float pd = clamp(uStand + (depthAt(q) - 0.5)*0.25, 0.0, 1.0);
+  return mix(sceneDepth(q), pd, m);
+}
+
 vec3 scenePainterly(vec2 q, float t, float lod){
-  float d = depthAt(q);
-  vec3 c = camAt(q, lod);
-  c = grade(c);
-  c = aerial(c, d, q);
+  float d = depthComposite(q);
+  vec3 c;
+  if (uCompose > 0.5){
+    // 担当を分ける。
+    //   写真 → 絵の言語へ翻訳する処理 (relight / grade / aerial) は**人物だけ**。
+    //     風景は既に絵として描かれていて、空気遠近も焼き込んである。
+    //     そこへもう一度霞を掛けると空が白茶ける (実写で発生)。
+    //   絵具の載せ方 (compand / divide / 楕円の探索) は**合成後に一様**。
+    //     ここを分けると継ぎ目で筆の挙動が変わって必ず見える。
+    // **合成は筆触パスの前**なので、同じ一筆が境界をまたぎ、マットの粗さは筆に隠れる。
+    vec3 person = aerial(grade(relight(camAt(q, lod))), d, q);
+    c = mix(ombrelleScene(q, t), person, matteAt(q));
+  } else {
+    c = grade(camAt(q, lod));
+    c = aerial(c, d, q);
+  }
   // 動きが凝った場所は暖かく光る(原典の「空席の光溜まり」の意味を転換)
   float asp = uRes.x / uRes.y;
   vec2 dS = vec2((q.x - uSeed.x)*asp, q.y - uSeed.y);
@@ -415,7 +541,7 @@ void main(){
 
   } else {
     // ---- 楕円筆触 + 等輝度色彩分割(絵側の層) ----
-    float d0 = depthAt(q);
+    float d0 = depthComposite(q);
     float bs = max(uBrush, 0.05);
     // タッチの遠近法: 手前ほど大きい筆
     float szG = mix(0.50, 1.30, clamp(d0, 0.0, 1.0));
@@ -489,7 +615,7 @@ void main(){
     float lod = uCamLod + log2(max(szG, 0.25));
     col = scenePainterly(qc, t, lod);
 
-    float d = depthAt(qc);
+    float d = depthComposite(qc);
     float l0 = dot(col, LW);
     float h1r = hash21(bestId + 3.1);
     float h2r = hash21(bestId + 17.9);
