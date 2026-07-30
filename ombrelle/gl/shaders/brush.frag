@@ -373,18 +373,24 @@ void main(){
     // ---- 楕円筆触 + 等輝度色彩分割(絵側の層) ----
     float d0 = depthAt(q);
     float bs = max(uBrush, 0.05);
-    float ang = strokeAngle(q, p, t, bs);
-    vec2 sdir = vec2(cos(ang), sin(ang));
-    vec2 perp = vec2(-sdir.y, sdir.x);
-    vec2 s = vec2(dot(p, sdir), dot(p, perp));
-
     // タッチの遠近法: 手前ほど大きい筆
     float szG = mix(0.50, 1.30, clamp(d0, 0.0, 1.0));
 
-    // 筆の大きさ。原典は画面いっぱいの風景を想定した値で、カメラの近接被写体に
-    // そのまま使うと筆が細かすぎて「ざらついた写真」にしか見えない。実行時に変えられるようにする
-    vec2 pitch = vec2(0.019, 0.0062) * bs;
-    vec2 base = floor(s/pitch);
+    // ---- 格子は回さない ----
+    // 原典は「筆の向きで座標系ごと回してから格子を切る」方式だった。原典の向きの場は
+    // 解析的で滑らかなので、これで成立していた。
+    //
+    // 実測の深度から作った向きの場は**輪郭で急回転する**(そこでは急回転が正しい)。
+    // 座標系ごと回すと、同じ一筆に属するはずの隣り合う画素が**別々の格子**を見て、
+    // 筆が細い糸屑に砕ける (髪と顔の境界に櫛状の筋が出た)。
+    // 向きの場を平滑化しても消えない。輪郭で速く変わること自体は正しいからである。
+    //
+    // 格子は画面に固定し、**各セルの楕円だけをセル中心の向きで回す**。
+    // こうすればすべての画素が同じセル集合に同意するので、糸屑は原理的に起きない。
+    // 筆は依然として向きの場に沿う (向きはセルごとに引く)。
+    // 代わりに格子は等方にする必要がある (回転した楕円が縦横どちらにも伸びるため)。
+    float pitch = 0.013 * bs;
+    vec2 base = floor(p/pitch);
     float best = -1.0;
     vec2 bestC = (base + 0.5)*pitch;
     vec2 bestId = base;
@@ -393,18 +399,21 @@ void main(){
     float nearQ = 1e9;
     vec2 nearC = bestC, nearId = base;
     float fuzz = (vnoise(p*52.0/bs) - 0.5)*0.55;
-    // 5x5 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
-    for (int j = -2; j <= 2; j++)
-    for (int i = -2; i <= 2; i++){
+    // 7x7 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
+    // (等方格子では楕円の長軸が縦横どちらにも伸びうるので、回転格子より広く探す)
+    for (int j = -3; j <= 3; j++)
+    for (int i = -3; i <= 3; i++){
       vec2 cid = base + vec2(float(i), float(j));
       vec2 rnd = vec2(hash21(cid + 1.7), hash21(cid + 7.3));
       vec2 ctr = (cid + 0.5 + (rnd - 0.5)*0.9)*pitch;
       float sz = (0.65 + 1.00*hash21(cid + 8.8))*szG;
       float aa = 0.0155*sz*bs;
       float bb = 0.0046*(0.7 + 0.8*hash21(cid + 4.4))*min(sz, 1.6)*bs;
-      float rr2 = (hash21(cid + 2.2) - 0.5)*0.55;
-      float cr2 = cos(rr2), sr2 = sin(rr2);
-      vec2 dd = s - ctr;
+      // 向きは**セル中心**で引く。画素ごとではないので一筆の中で必ず一定になる
+      vec2 cq = vec2(ctr.x/asp + 0.5, ctr.y + 0.5);
+      float ca2 = strokeAngle(cq, ctr, t, bs) + (hash21(cid + 2.2) - 0.5)*0.55;
+      float cr2 = cos(-ca2), sr2 = sin(-ca2);
+      vec2 dd = p - ctr;
       vec2 dr = vec2(cr2*dd.x - sr2*dd.y, sr2*dd.x + cr2*dd.y);
       float q2 = dr.x*dr.x/(aa*aa) + dr.y*dr.y/(bb*bb);
       q2 *= 1.0 + fuzz;
@@ -413,8 +422,7 @@ void main(){
       if (q2 < nearQ){ nearQ = q2; nearC = ctr; nearId = cid; }
     }
     if (best < 0.0){ bestC = nearC; bestId = nearId; }   // 隙間は最寄りの筆で埋める
-    vec2 pc = sdir*bestC.x + perp*bestC.y;
-    vec2 qc = vec2(pc.x/asp + 0.5, pc.y + 0.5);
+    vec2 qc = vec2(bestC.x/asp + 0.5, bestC.y + 0.5);
 
     // 一筆が覆う面積の分だけ先にぼかしてから1点サンプルする(写真の高周波を落とす)
     float lod = uCamLod + log2(max(szG, 0.25));
@@ -438,17 +446,33 @@ void main(){
     // 混ざらずに色ノイズとして見える (スーラは点、モネは大きめの筆で弱い分割)。
     // 連動させることで uSplit は「目に見える揺らめきの量」という、
     // 筆サイズに依らない意味を持つ。
-    float dlt = uSplit * (0.30 + 0.70*d) * 1.15 / max(bs, 0.4);
-    dlt = min(dlt, 1.05);                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
+    float dlt = uSplit * (0.30 + 0.70*d) * 1.90 / max(bs, 0.4);
+    dlt = min(dlt, 1.90);                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
     if (dlt > 1e-3){
       // 分離角は筆ごとに**連続分布**から引く。
       // ±Δ の二値にすると局所色ごとに色が 2 つしか現れず、
       // 「緑と赤が同じ色ばかり」に見える (実写で指摘された)。
       //
-      // θ を [-Δ, Δ] の一様分布から引くと平均は sin(Δ)/Δ 倍に縮むので、
-      // **Δ/sin(Δ) 倍**に伸ばせば平均が厳密に元へ戻る (二値の 1/cos(Δ) に対応)。
-      float th  = (h1r*2.0 - 1.0) * dlt;
-      float sat = dlt / max(sin(dlt), 1e-3);
+      // 分布の形も効く。実写での指摘は 2 つあり、**逆方向を向いていた**:
+      //   「同じ色すぎる」 → 均等に散ってほしい (一様分布が有利)
+      //   「肌色に見える」 → 緑や紫まで振り切ってほしい (裾の重い分布が有利)
+      // 一様だと大半が中途半端にずれた同系色になり、全体は肌色のまま。
+      // 裾を重くすると大半が局所色の近くに集まり、かえって 2 色に偏る。
+      //
+      // 両立させるため**混合分布**にする:
+      //   確率 1-R … θ ~ U(-Δ, Δ)      基調。均等に散らす
+      //   確率 R   … θ ~ U(-Δf, Δf)    飛び道具。肌から緑や紫へ振り切る
+      // 平均の縮みは一様分布の sinc の混合で、閉じた式で書ける:
+      //   (1-R)·sin(Δ)/Δ + R·sin(Δf)/Δf
+      // その逆数を掛ければ平均が厳密に元へ戻る。
+      const float R = 0.26;
+      float dltF = min(dlt*2.6, 2.6);
+      bool far = h2r < R;
+      float dd2 = far ? dltF : dlt;
+      float th  = (h1r*2.0 - 1.0) * dd2;
+      float shr = (1.0 - R)*sin(dlt)/max(dlt, 1e-3)
+                +       R *sin(dltF)/max(dltF, 1e-3);
+      float sat = 1.0 / max(shr, 0.25);
       col = divide(col, th, sat);
       // 補色の差し色: 暗部にごく少数だけ混ぜる(影に反対色を置く印象派の常套)
       if (h2r < 0.05*uSplit && l0 < 0.42) col = mix(col, divide(col, 3.14159, 0.60), 0.45);
