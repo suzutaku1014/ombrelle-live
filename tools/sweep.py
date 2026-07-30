@@ -25,7 +25,7 @@ from ombrelle.gl.renderer import Renderer
 from ombrelle.source import open_source
 
 DEFAULTS = {
-    "brush": 2.4, "split": 0.50, "haze": 0.35, "chroma": 1.35,
+    "brush": 2.0, "split": 0.40, "haze": 0.35, "chroma": 1.25,
     "cam_lod": 2.0, "flow_gain": 1.5, "paint_mix": 1.0,
 }
 

@@ -147,10 +147,7 @@ vec3 grade(vec3 c){
   float lS = mix(lc, lc*lc*(3.0 - 2.0*lc), 0.45);   // ゆるい S 字
   c *= lS / max(l, 1e-3);
 
-  // 写真の彩度はモネの絵より低い。輝度は保ったまま彩度だけ持ち上げる
-  float l1 = dot(c, LW);
-  c = mix(vec3(l1), c, uChroma);
-  c *= l1 / max(dot(c, LW), 1e-3);
+  // 彩度は筆触パスの satG で一箇所だけ決める。ここで掛けると二重になる
   return c;
 }
 
@@ -399,8 +396,11 @@ void main(){
     // 色相のゆらぎは残すが、casts を作らない程度に小さく対称に
     col = hueRotate(col, (h2r - 0.5) * 0.14 * uSplit);
 
-    float satG = 1.18 + 0.28*d;         // 彩度ブーストも手前だけ
-    col = mix(vec3(dot(col, LW)), col, satG + 0.30*(hash21(bestId + 13.0) - 0.5));
+    // 彩度: grade() で既に uChroma を掛けている。原典の satG(1.18-1.46) を
+    // そこへ素で乗せると顔で約 2.0 倍になり、肌が桃色に転ぶ (実写で発生)。
+    // depth による変調は 1.0 のまわりの係数として掛ける
+    float satG = uChroma * (0.92 + 0.20*d);
+    col = mix(vec3(dot(col, LW)), col, satG + 0.24*(hash21(bestId + 13.0) - 0.5));
     col *= l0 / max(dot(col, LW), 1e-3);   // 輝度は保存(原典の思想はここで維持)
     // 実際の絵では隣り合う筆は色相より**明度**が違う。原典の ±1.5% では
     // 平らな面がのっぺりしたまま残るので、分割の強さに連動させて振る
