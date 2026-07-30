@@ -7,77 +7,33 @@
 
 ---
 
-## STEP 0 — ディスクを空ける（必須・最初に）
+## STEP 0 — ディスクを空ける ✅ 完了
 
-**残り 2.1 GB / 460 GB（100% 使用）。** このままでは STEP 4 のデータ収集が途中で死ぬ。
-必要な空き容量は **10 GB 以上**を推奨（データ自体は約 600 MB だが、macOS 自体が
-数 GB の作業領域を要求する）。
-
-安全に消せそうな候補（**確認してから消してください。私は勝手に消しません**）:
-
-```bash
-du -sh ~/Downloads/* 2>/dev/null | sort -rh | head -20
-```
-
-上位はこうなっています:
-
-| サイズ | 中身 | 判断 |
-|---|---|---|
-| 3.3 G | `DavinciResolve17-IntrotoEditPT1.mov` | チュートリアル動画。再取得可能 |
-| 3.2 G | `DaVinci-Resolve-17-Edit-...Part1.zip` | 同上（上の .mov と重複の可能性） |
-| 2.7 G | `Microsoft_365_..._Installer.pkg` | インストール済みなら不要 |
-| 758 M | `AcroRdrSCADC...dmg` | 同上 |
-| 696 M | `TouchDesigner...dmg` | 同上 |
-| 592 M | `Visual Studio Code.app` | `/Applications` にあるなら重複 |
-| 463 M | `Docker.dmg` / 454 M `Codex.dmg` / 439 M `UnityHubSetup.dmg` / 318 M `Claude (2).dmg` | インストーラ。再取得可能 |
-
-上位 3 つだけで 9 GB 空きます。
-
-もっと大きいのは `~/Library/Caches` の **29 GB** ですが、中身はアプリ次第なので
-機械的に消すのは勧めません。何が入っているか見るなら:
-
-```bash
-du -sh ~/Library/Caches/* 2>/dev/null | sort -rh | head -15
-```
-
-**確認:**
-```bash
-df -h /Users/suzukitakumi | tail -1
-```
-
-**報告すること:** 空けた後の空き容量。10 GB 未満なら収集する枚数を減らす設計に変えます。
+2.1 GB → **29 GB 空き**。データ収集に十分。
 
 ---
 
-## STEP 1 — カメラ権限
+## STEP 1 — 自分のターミナルから起動する
 
-**システム設定 → プライバシーとセキュリティ → カメラ → Claude をオン**
-
-一覧に `Claude` が無い場合は、いちど下のコマンドを実行すると要求が飛びます（その後に一覧へ出る）。
+カメラは**あなたが動かす**方針なので、Claude 側の権限は不要。
+`Terminal.app`（または iTerm）から実行すると、そのアプリに対して権限ダイアログが正しく出ます。
 
 ```bash
-cd /Users/suzukitakumi/magic-effect && uv run python -c "import cv2; c=cv2.VideoCapture(0,cv2.CAP_AVFOUNDATION); print('opened:', c.isOpened()); c.release()"
+cd /Users/suzukitakumi/magic-effect
+uv run python -m ombrelle.app --source cam:0 --depth teacher
 ```
 
-`opened: True` が出れば完了。
+初回にカメラ許可を聞かれるので許可してください。ウィンドウが開けば完了。
 
-> **注意**: macOS はカメラ権限の付与を**アプリの再起動後**に反映することがあります。
-> `opened: False` のままなら Claude.app を再起動してください。その場合この会話は切れるので、
-> 新しいセッションで「ombrelle-live の手順書 STEP 2 から」と言ってもらえれば続けられます
-> （`docs/runbook.md` と `docs/devlog.md` を読めば私が状況を復元できます）。
-
-**報告すること:** `opened:` の結果。
+> 私（Claude）はカメラ映像を直接見られません。**`s` キーのスクリーンショットと
+> `p` キーの設定ファイルが、私への唯一の報告経路**になります。次のステップで使います。
 
 ---
 
 ## STEP 2 — 実写で初見、意匠を追い込む
 
-```bash
-uv run python -m ombrelle.app --source cam:0 --depth teacher
-```
-
 **ビューをこの順で見てください。**（診断の順序です。いきなり `0` を見て「変」と思っても
-どの段が原因か切り分けられない）
+どの段が原因か切り分けられません）
 
 | キー | 見るもの | 正常なら |
 |---|---|---|
@@ -95,12 +51,22 @@ uv run python -m ombrelle.app --source cam:0 --depth teacher
 | `[` / `]` | 風の利得 | 手を振っても筆が傾がないなら `]` で上げる |
 | `,` / `.` | 筆のぼかし | ザラついてノイズっぽいなら `.` で上げる（一筆が覆う面積分ぼかす） |
 | `-` / `=` | 絵の強さ | `-` を連打すると写真寄りに戻る。効果の確認に便利 |
-| `s` | スクショ → `shots/` に保存 | 気に入った状態を残す |
 
-**報告すること:**
-- 気に入った状態の **haze / chroma / flowGain / lod の 4 数値**（HUD の 3〜4 行目）→ 既定値に反映します
-- `shots/` に保存したスクショ
-- 「ここが変」と思った点。特に **view `2` の深度がチラつくか**（これが STEP 3 の核心）
+### 決まったら 2 つのキーを押すだけ
+
+| キー | 何が起きるか |
+|---|---|
+| **`s`** | `shots/` に PNG と **同名の .json**（そのときの全設定 + fps + energy）を保存 |
+| **`p`** | `config.json` に現在の意匠パラメータを保存。**次回起動時に自動で読まれます** |
+
+これで HUD の数字を目で読んで書き写す必要がありません。
+気に入った状態を見つけたら `s` → `p`。気に入らない候補も `s` だけ押しておくと比較できます。
+
+**報告すること: 「保存した」の一言だけ。** 私が `config.json` と `shots/*.json` を読んで、
+既定値に反映し、スクショを見て次の調整を提案します。
+
+> 迷ったら「良い / 悪い」を 3〜4 枚ずつ `s` で残してください。
+> 私は数値と絵を突き合わせられるので、言葉で説明するより速く原因に辿り着けます。
 
 ---
 

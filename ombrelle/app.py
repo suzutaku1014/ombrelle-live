@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import glfw
 import numpy as np
 
+from . import config as cfg
 from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
@@ -27,7 +29,7 @@ from .source import open_source
 class State:
     def __init__(self, args) -> None:
         self.view = float(args.view)
-        self.paint_mix = 1.0
+        self.paint_mix = args.paint_mix
         self.flow_gain = args.flow_gain
         self.cam_lod = args.cam_lod
         self.haze = args.haze
@@ -35,6 +37,7 @@ class State:
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
+        self.save = False
         self.depth_kind = args.depth  # "teacher" | "student" | "off"
 
 
@@ -48,6 +51,8 @@ def make_key_callback(state: State):
             state.view = float(key - glfw.KEY_0)
         elif key == glfw.KEY_S:
             state.shot = True
+        elif key == glfw.KEY_P:
+            state.save = True
         elif key == glfw.KEY_H:
             state.hud = not state.hud
         elif key == glfw.KEY_LEFT_BRACKET:
@@ -104,13 +109,21 @@ def main() -> None:
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
     ap.add_argument("--cam-lod", type=float, default=2.0)
+    ap.add_argument("--paint-mix", type=float, default=1.0,
+                    help="0=グレーディングのみ 1=完全に絵")
     ap.add_argument("--haze", type=float, default=0.70)
     ap.add_argument("--chroma", type=float, default=1.30)
     ap.add_argument("--energy-floor", type=float, default=0.0,
                     help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
+    # config.json があればそれを既定値にする。明示した引数の方が優先される
+    saved = cfg.load()
+    if saved:
+        ap.set_defaults(**saved)
     args = ap.parse_args()
+    if saved:
+        print(f"config.json を読み込みました: {saved}")
 
     state = State(args)
     meter = Meter()
@@ -200,10 +213,22 @@ def main() -> None:
 
             if state.shot:
                 state.shot = False
-                p = renderer.screenshot(
-                    Path("shots") / f"{datetime.now():%Y%m%d-%H%M%S}.png"
-                )
-                print(f"saved {p}")
+                stem = f"{datetime.now():%Y%m%d-%H%M%S}"
+                p = renderer.screenshot(Path("shots") / f"{stem}.png")
+                # どのスクショがどの設定だったかを必ず残す
+                side = p.with_suffix(".json")
+                side.write_text(
+                    json.dumps(cfg.snapshot(state, args.energy_floor, {
+                        "source": args.source,
+                        "fps": round(meter.fps, 1),
+                        "e2e_ms": round(meter.latency_ms, 1),
+                        "energy": round(float(energy), 5),
+                    }), indent=2) + "\n", encoding="utf-8")
+                print(f"saved {p} + {side.name}")
+
+            if state.save:
+                state.save = False
+                print(f"saved {cfg.save(state, args.energy_floor)}  ← 次回起動時に自動で読まれます")
 
             n += 1
             if args.frames and n >= args.frames:
