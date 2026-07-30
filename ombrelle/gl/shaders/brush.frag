@@ -25,6 +25,7 @@ uniform float uView;       // 0=筆触 1=生カメラ 2=深度 3=フローの場
 uniform sampler2D uCam;    // RGB8 + mipmap
 uniform sampler2D uDepth;  // R16F  0=遠 1=近 に正規化済み
 uniform sampler2D uFlow;   // RG16F 画面幅を1とした「1フレームあたりの移動量」
+uniform sampler2D uAngle;  // RG16F 筆の向きの場を 2 倍角ベクトルで焼いたもの
 
 uniform float uHasDepth;   // 0=未接続(ダミー深度を使う) 1=実測
 uniform float uHasFlow;
@@ -59,6 +60,13 @@ float hash21(vec2 p){
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
+}
+// 4 個の乱数を 1 回で返す (Dave Hoskins 系)。セルあたり 6 回の hash21 が
+// 2 回の hash42 になる。7x7 = 49 セルを回すのでここが効く
+vec4 hash42(vec2 p){
+  vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+  p4 += dot(p4, p4.wzxy + 33.33);
+  return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
 float hash11(float p){ p = fract(p*0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
 // 注: 元の名前 noise2 は desktop GLSL の予約済み組み込み関数と衝突するため改名
@@ -389,8 +397,11 @@ void main(){
     // こうすればすべての画素が同じセル集合に同意するので、糸屑は原理的に起きない。
     // 筆は依然として向きの場に沿う (向きはセルごとに引く)。
     // 代わりに格子は等方にする必要がある (回転した楕円が縦横どちらにも伸びるため)。
-    float pitch = 0.013 * bs;
+    // 格子は等方。ピッチと楕円の比が探索範囲を決めるので、5x5 に収まる比にする
+    // (7x7 は 49 セルで、向きをテクスチャ化しても 34fps までしか戻らなかった)
+    float pitch = 0.0175 * bs;
     vec2 base = floor(p/pitch);
+    float reach2 = (2.35*pitch)*(2.35*pitch);   // セルが届きうる最大距離の二乗
     float best = -1.0;
     vec2 bestC = (base + 0.5)*pitch;
     vec2 bestId = base;
@@ -399,26 +410,40 @@ void main(){
     float nearQ = 1e9;
     vec2 nearC = bestC, nearId = base;
     float fuzz = (vnoise(p*52.0/bs) - 0.5)*0.55;
-    // 7x7 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
-    // (等方格子では楕円の長軸が縦横どちらにも伸びうるので、回転格子より広く探す)
-    for (int j = -3; j <= 3; j++)
-    for (int i = -3; i <= 3; i++){
+    // 5x5 近傍から1枚の楕円を勝たせる = 一つの楕円は一色 = 一筆
+    for (int j = -2; j <= 2; j++)
+    for (int i = -2; i <= 2; i++){
       vec2 cid = base + vec2(float(i), float(j));
-      vec2 rnd = vec2(hash21(cid + 1.7), hash21(cid + 7.3));
-      vec2 ctr = (cid + 0.5 + (rnd - 0.5)*0.9)*pitch;
-      float sz = (0.65 + 1.00*hash21(cid + 8.8))*szG;
+      // 揺らぎ前のセル中心で早期に足切りする(ハッシュを引く前なので実質ただ)
+      vec2 d0v = p - (cid + 0.5)*pitch;
+      if (dot(d0v, d0v) > reach2) continue;
+
+      vec4 r0 = hash42(cid + 1.7);          // rnd.xy / sz / bb
+      vec2 ctr = (cid + 0.5 + (r0.xy - 0.5)*0.9)*pitch;
+      float sz = (0.65 + 1.00*r0.z)*szG;
       float aa = 0.0155*sz*bs;
-      float bb = 0.0046*(0.7 + 0.8*hash21(cid + 4.4))*min(sz, 1.6)*bs;
-      // 向きは**セル中心**で引く。画素ごとではないので一筆の中で必ず一定になる
+      float bb = 0.0046*(0.7 + 0.8*r0.w)*min(sz, 1.6)*bs;
+
+      // 向きは**セル中心**で引く。画素ごとではないので一筆の中で必ず一定になる。
+      // 場は angle.frag に焼いてあるので 1 回のテクスチャ参照で済む
+      // (その場で計算すると画素あたり 25 回になり 130fps -> 21fps に落ちた)
       vec2 cq = vec2(ctr.x/asp + 0.5, ctr.y + 0.5);
-      float ca2 = strokeAngle(cq, ctr, t, bs) + (hash21(cid + 2.2) - 0.5)*0.55;
-      float cr2 = cos(-ca2), sr2 = sin(-ca2);
+      vec2 av = texture(uAngle, img(clamp(cq, 0.0, 1.0))).rg;
+      vec4 r1 = hash42(cid + 5.1);          // 向きの揺らぎ / 優先度 / 明度
+      // 場は 2 倍角ベクトル (cos2a, sin2a) で焼いてある。
+      // atan で角度に戻してから cos/sin を取ると、セルあたり atan+cos+sin の 3 回。
+      // 25 セル分では効く (実測 36fps)。**半角公式**で直接 cos a, sin a を得る:
+      //   cos a = sqrt((1+cos2a)/2),  sin a = sign(sin2a)·sqrt((1-cos2a)/2)
+      // 揺らぎは 2 倍角のまま回してから半角に落とす。
+      float jj = (r1.x - 0.5)*1.10;         // = 2 * (r1.x-0.5)*0.55
+      float cj = cos(jj), sj = sin(jj);
+      vec2 avr = normalize(vec2(av.x*cj - av.y*sj, av.x*sj + av.y*cj) + vec2(1e-6, 0.0));
+      float cr2 =  sqrt(max(0.5*(1.0 + avr.x), 0.0));
+      float sr2 = -sign(avr.y)*sqrt(max(0.5*(1.0 - avr.x), 0.0));   // 符号は -a 側
       vec2 dd = p - ctr;
       vec2 dr = vec2(cr2*dd.x - sr2*dd.y, sr2*dd.x + cr2*dd.y);
-      float q2 = dr.x*dr.x/(aa*aa) + dr.y*dr.y/(bb*bb);
-      q2 *= 1.0 + fuzz;
-      float pr2 = hash21(cid + 5.1);
-      if (q2 < 1.0 && pr2 > best){ best = pr2; bestC = ctr; bestId = cid; }
+      float q2 = (dr.x*dr.x/(aa*aa) + dr.y*dr.y/(bb*bb)) * (1.0 + fuzz);
+      if (q2 < 1.0 && r1.y > best){ best = r1.y; bestC = ctr; bestId = cid; }
       if (q2 < nearQ){ nearQ = q2; nearC = ctr; nearId = cid; }
     }
     if (best < 0.0){ bestC = nearC; bestId = nearId; }   // 隙間は最寄りの筆で埋める

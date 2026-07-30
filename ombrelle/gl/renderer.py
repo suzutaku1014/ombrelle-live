@@ -1,6 +1,10 @@
 """moderngl による描画。
 
 設計の要点:
+  * 描画は 2 パス。まず筆の向きの場を低解像度に焼き (angle.frag)、
+    次に筆触パスがそれを読む。筆触パスは 5x5 のセルそれぞれについて
+    「そのセル中心の向き」を必要とするので、その場で計算すると画素あたり
+    25 回になり 130fps -> 21fps まで落ちた (実測)。
   * 筆触パスは 1 フラグメントあたり 5x5 の楕円探索 + 24 枚の花びらを回すので重い。
     Retina のフレームバッファ(2560x1440 等)で直接描くと帯域も演算も無駄になるため、
     **固定の内部解像度**の FBO に描いてからウィンドウへ引き伸ばす。
@@ -61,12 +65,27 @@ class Renderer:
             vertex_shader=_load("fullscreen.vert"),
             fragment_shader=_load("brush.frag"),
         )
+        # 向きの場を先に焼くパス (低解像度)。brush.frag が 7x7 のセルごとに
+        # 向きを問い合わせるので、その場で計算すると画素あたり 49 回になる
+        self.angle = self.ctx.program(
+            vertex_shader=_load("fullscreen.vert"),
+            fragment_shader=_load("angle.frag"),
+        )
         self.present = self.ctx.program(
             vertex_shader=_load("fullscreen.vert"),
             fragment_shader=_load("present.frag"),
         )
         self._vao_brush = self.ctx.vertex_array(self.brush, [(self._vbo, "2f", "in_pos")])
         self._vao_present = self.ctx.vertex_array(self.present, [(self._vbo, "2f", "in_pos")])
+        self._vao_angle = self.ctx.vertex_array(self.angle, [(self._vbo, "2f", "in_pos")])
+
+        # 向きの場は本質的に低周波なので 1/4 で十分
+        self.ang_w, self.ang_h = max(render_w // 4, 64), max(render_h // 4, 36)
+        self.angle_tex = self.ctx.texture((self.ang_w, self.ang_h), 2, dtype="f2")
+        self.angle_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        self.angle_tex.repeat_x = False
+        self.angle_tex.repeat_y = False
+        self.angle_fbo = self.ctx.framebuffer(color_attachments=[self.angle_tex])
 
         self.scene_tex = self.ctx.texture((render_w, render_h), 3, dtype="f1")
         self.scene_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
@@ -130,13 +149,35 @@ class Renderer:
 
     # ------------------------------------------------------------ 描画
     def draw(self, uniforms: dict[str, object]) -> None:
+        has_depth = 1.0 if self.depth_tex is not None else 0.0
+        has_flow = 1.0 if self.flow_tex is not None else 0.0
+
+        # ---- 1. 向きの場を焼く ----
+        self.angle_fbo.use()
+        self.ctx.viewport = (0, 0, self.ang_w, self.ang_h)
+        if self.depth_tex is not None:
+            self.depth_tex.use(1)
+            self.angle["uDepth"] = 1
+        if self.flow_tex is not None:
+            self.flow_tex.use(2)
+            self.angle["uFlow"] = 2
+        au = dict(uniforms)
+        au["uRes"] = (float(self.ang_w), float(self.ang_h))
+        au["uHasDepth"] = has_depth
+        au["uHasFlow"] = has_flow
+        for k, v in au.items():
+            if k in self.angle:
+                self.angle[k] = v
+        self._vao_angle.render(moderngl.TRIANGLES, vertices=3)
+
+        # ---- 2. 筆触 ----
         self.fbo.use()
         self.ctx.viewport = (0, 0, self.render_w, self.render_h)
 
         u = dict(uniforms)
         u["uRes"] = (float(self.render_w), float(self.render_h))
-        u["uHasDepth"] = 1.0 if self.depth_tex is not None else 0.0
-        u["uHasFlow"] = 1.0 if self.flow_tex is not None else 0.0
+        u["uHasDepth"] = has_depth
+        u["uHasFlow"] = has_flow
 
         if self.cam_tex is not None:
             self.cam_tex.use(0)
@@ -147,6 +188,8 @@ class Renderer:
         if self.flow_tex is not None:
             self.flow_tex.use(2)
             self.brush["uFlow"] = 2
+        self.angle_tex.use(3)
+        self.brush["uAngle"] = 3
 
         for k, v in u.items():
             if k in self.brush:
