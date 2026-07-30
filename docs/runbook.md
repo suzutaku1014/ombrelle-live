@@ -13,6 +13,26 @@
 
 ---
 
+## 再開するとき（Claude.app 再起動後）
+
+新しいセッションで、これを貼ってください:
+
+> ombrelle-live の続き。docs/runbook.md と docs/devlog.md を読んで STEP 1 から。
+> カメラ権限は付与済みなので、まず `--source cam:0 --depth teacher` を実写で確認して。
+
+Claude 側でやること (再開時のチェックリスト):
+
+1. `uv run python -c "import cv2; c=cv2.VideoCapture(0,cv2.CAP_AVFOUNDATION); print(c.isOpened()); c.release()"` で権限を確認
+2. `uv run python -m ombrelle.app --source cam:0 --depth teacher --view 2 --frames 300 --shot shots/real_depth.png` で深度を目視
+3. 同様に `--view 3`(フロー) `--view 0`(筆触) を撮って、合成シーンとの差を見る
+4. 実写で崩れる箇所を直し、意匠の既定値 (haze / chroma / flow_gain / cam_lod) を詰める
+5. STEP 3 以降 (クリップ撮影 → データ収集 → 再学習 → 評価) へ
+
+初日時点の状態: M0〜M6 完了、合成シーンで全段検証済み、コミット済み。
+未解決の宿題は devlog の「未着手 / 宿題」を参照。
+
+---
+
 ## STEP 1 — 自分のターミナルから起動する
 
 カメラは**あなたが動かす**方針なので、Claude 側の権限は不要。
