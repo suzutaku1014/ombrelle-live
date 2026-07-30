@@ -25,7 +25,7 @@ from ombrelle.gl.renderer import Renderer
 from ombrelle.source import open_source
 
 DEFAULTS = {
-    "brush": 1.6, "split": 0.50, "haze": 0.35, "chroma": 1.25,
+    "brush": 1.6, "split": 0.50, "haze": 0.35, "chroma": 1.50, "inject": 0.20,
     "cam_lod": 2.0, "flow_gain": 1.5, "paint_mix": 1.0,
 }
 
@@ -126,7 +126,7 @@ def main() -> None:
             "uWind": (float(flowf.wind[0]), float(flowf.wind[1])),
             "uEnergy": 0.0, "uPaintMix": cfg["paint_mix"],
             "uHaze": cfg["haze"], "uChroma": cfg["chroma"],
-            "uBrush": cfg["brush"], "uSplit": cfg["split"],
+            "uBrush": cfg["brush"], "uSplit": cfg["split"], "uInject": cfg["inject"],
             "uWhite": tuple(float(x) for x in wb.gain),
         })
         raw = renderer.fbo.read(components=3, alignment=1)

@@ -40,6 +40,7 @@ uniform float uChroma;     // 全体の彩度ブースト(写真はモネより�
 uniform float uBrush;      // 筆の大きさ。これが「絵に見えるか」を最も強く決める
 uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/寒色側へ振り分ける量)
 uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。これで割ってから絵の色を決める
+uniform float uInject;     // 中性面への色の注入量。分割は平均を保存するので彩度は増えない
 
 #define PETALS 24
 
@@ -186,6 +187,27 @@ vec3 divide(vec3 c, float ang, float sat){
   float R = Y + v.x;
   float B = Y + v.y;
   float G = (Y - LW.r*R - LW.b*B) / LW.g;          // 輝度は定義から保存される
+  return vec3(R, G, B);
+}
+
+// 中性面への色の注入。
+//
+// divide() は色度ベクトルを回す操作なので、**中性色は回しても中性のまま**。
+// 白い壁や白飛びした天井では分割が空振りする (実写で画面の大半がこれだった)。
+// 画家は白い壁を「暖色と寒色」で描く。分割の前に、輝度に応じた色度を与えておく。
+//   明るい面 → 暖色側、暗い面 → 寒色側
+// 注入量は元の彩度が低いほど大きく、中間調で最大にする
+// (実際の絵具も最高彩度は中間調にあり、白飛びと黒潰れでは彩度が落ちる)。
+vec3 inject(vec3 c, float amt){
+  float Y = dot(c, LW);
+  vec2 v = vec2(c.r - Y, c.b - Y);
+  float bias = clamp((Y - 0.45)*2.0, -1.0, 1.0);        // 明るいほど暖色へ
+  float mid  = clamp(4.0*Y*(1.0 - Y), 0.0, 1.0);        // 中間調で最大
+  float lack = 1.0 - smoothstep(0.02, 0.16, length(v)); // 元が中性なほど強く
+  vec2 axis = normalize(vec2(0.62, -0.48));             // 暖色方向 (Cr+, Cb-)
+  v += axis * bias * amt * mid * lack;
+  float R = Y + v.x, B = Y + v.y;
+  float G = (Y - LW.r*R - LW.b*B) / LW.g;
   return vec3(R, G, B);
 }
 
@@ -410,6 +432,9 @@ void main(){
     // 混ざらずに色ノイズとして見える (スーラは点、モネは大きめの筆で弱い分割)。
     // 連動させることで uSplit は「目に見える揺らめきの量」という、
     // 筆サイズに依らない意味を持つ。
+    // 分割の前に中性面へ色を入れる (入れないと最も広い面で分割が空振りする)
+    if (uInject > 1e-3) col = inject(col, uInject);
+
     float dlt = uSplit * (0.30 + 0.70*d) * 1.15 / max(bs, 0.4);
     dlt = min(dlt, 1.05);                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
     if (dlt > 1e-3){

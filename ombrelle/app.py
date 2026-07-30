@@ -38,6 +38,7 @@ class State:
         self.chroma = args.chroma
         self.brush = args.brush
         self.split = args.split
+        self.inject = args.inject
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -87,6 +88,10 @@ def make_key_callback(state: State):
             state.split = max(0.0, state.split - 0.05)
         elif key == glfw.KEY_Y:
             state.split = min(1.5, state.split + 0.05)
+        elif key == glfw.KEY_F:
+            state.inject = max(0.0, state.inject - 0.02)
+        elif key == glfw.KEY_G:
+            state.inject = min(0.6, state.inject + 0.02)
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -128,8 +133,10 @@ def main() -> None:
     ap.add_argument("--split", type=float, default=0.50,
                     help="色彩分割の強さ。筆の大きさに連動するので、"
                          "筆を変えても見た目の揺らめき量は保たれる")
+    ap.add_argument("--inject", type=float, default=0.20,
+                    help="中性面への色の注入量。白い壁を暖色と寒色で描くための量")
     ap.add_argument("--haze", type=float, default=0.35)
-    ap.add_argument("--chroma", type=float, default=1.25)
+    ap.add_argument("--chroma", type=float, default=1.50)
     ap.add_argument("--energy-floor", type=float, default=0.0,
                     help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
@@ -229,6 +236,7 @@ def main() -> None:
                 "uChroma": state.chroma,
                 "uBrush": state.brush,
                 "uSplit": state.split,
+                "uInject": state.inject,
                 "uWhite": tuple(float(x) for x in wb.gain),
             })
             meter.add_latency(time.perf_counter() - stamp)
