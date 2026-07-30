@@ -35,6 +35,8 @@ uniform float uSeedDepth;  // 重心位置の深度
 uniform vec2  uWind;       // 画面全体の代表的な流れの向き (正規化前)
 uniform float uEnergy;     // フローのエネルギー 0..1 くらい
 uniform float uPaintMix;   // 0=グレーディングのみ 1=完全に絵
+uniform float uHaze;       // 空気遠近の強さ
+uniform float uChroma;     // 全体の彩度ブースト(写真はモネより地味なので持ち上げる)
 
 #define PETALS 24
 
@@ -121,6 +123,10 @@ vec3 grade(vec3 c){
   c = mix(c, mix(c, SHADOW_V, 0.60), sh);
   float hi = smoothstep(0.60, 1.00, l);
   c = mix(c, mix(c, LIGHT_W, 0.45), hi);
+  // 写真の彩度はモネの絵より低い。輝度は保ったまま彩度だけ持ち上げる
+  float l1 = dot(c, LW);
+  c = mix(vec3(l1), c, uChroma);
+  c *= l1 / max(dot(c, LW), 1e-3);
   return c;
 }
 
@@ -130,9 +136,13 @@ vec3 aerial(vec3 c, float d, vec2 q){
   vec2 rd = normalize(vec2((q.x - 0.5)*asp, q.y - 0.24) + vec2(1e-4));
   float sunAmt = pow(max(dot(rd, normalize(vec2(0.88, 0.30))), 0.0), 7.0);
   vec3 hazeC = mix(HAZE_COOL, vec3(0.97, 0.97, 0.96), clamp(sunAmt*0.8, 0.0, 1.0));
-  float distP = mix(2.0, 0.15, pow(clamp(d, 0.0, 1.0), 0.7));
-  c = mix(c, hazeC, 1.0 - exp(-distP*0.32));
-  c = mix(c, PINK_HAZE, 0.12*pow(1.0 - clamp(d, 0.0, 1.0), 4.0));
+  // 原典は distP = mix(2.0, 0.15, ...) だったが、それは「丘の草」の帯に対する値で、
+  // 空には霞を掛けていなかった。カメラでは depth=0 が空そのものなので、
+  // 同じ係数を全画面に掛けると空が灰紫に洗われる。遠側を圧縮して uHaze で調整する。
+  float dd = clamp(d, 0.0, 1.0);
+  float distP = mix(1.6, 0.12, pow(dd, 0.7));
+  c = mix(c, hazeC, uHaze * (1.0 - exp(-distP*0.32)));
+  c = mix(c, PINK_HAZE, uHaze * 0.10*pow(1.0 - dd, 4.0));
   return c;
 }
 
@@ -166,8 +176,9 @@ vec3 petals(vec3 col, vec2 q, float sceneD, float t){
     float g2 = exp(-0.5*(dr.x*dr.x/(sx*sx) + dr.y*dr.y/(sy*sy)));
     if (g2 < 0.002) continue;
 
-    // 深度: 生まれた場所の深度から、奥へ沈んでいく
-    float pd = mix(uSeedDepth, uSeedDepth*0.30, smoothstep(0.10, 0.80, pr));
+    // 深度: 発生点の深度を中心に散らす。半分は人物より手前、半分は奥に置くことで
+    // シルエットの境界で「回り込み」が読める。時間とともにわずかに奥へ沈む。
+    float pd = clamp(uSeedDepth + (h1 - 0.5)*0.50 - 0.10*pr, 0.0, 1.0);
     // 手前にある物体(=sceneD が大きい)より奥なら隠れる
     float vis = (uHasDepth < 0.5) ? 1.0 : smoothstep(pd + 0.06, pd - 0.06, sceneD);
 

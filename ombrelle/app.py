@@ -30,6 +30,8 @@ class State:
         self.paint_mix = 1.0
         self.flow_gain = args.flow_gain
         self.cam_lod = args.cam_lod
+        self.haze = args.haze
+        self.chroma = args.chroma
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -60,6 +62,14 @@ def make_key_callback(state: State):
             state.paint_mix = max(0.0, state.paint_mix - 0.1)
         elif key == glfw.KEY_EQUAL:
             state.paint_mix = min(1.0, state.paint_mix + 0.1)
+        elif key == glfw.KEY_K:
+            state.haze = max(0.0, state.haze - 0.05)
+        elif key == glfw.KEY_L:
+            state.haze = min(1.5, state.haze + 0.05)
+        elif key == glfw.KEY_N:
+            state.chroma = max(0.5, state.chroma - 0.05)
+        elif key == glfw.KEY_M:
+            state.chroma = min(2.5, state.chroma + 0.05)
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -94,6 +104,10 @@ def main() -> None:
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
     ap.add_argument("--cam-lod", type=float, default=2.0)
+    ap.add_argument("--haze", type=float, default=0.70)
+    ap.add_argument("--chroma", type=float, default=1.30)
+    ap.add_argument("--energy-floor", type=float, default=0.0,
+                    help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
     args = ap.parse_args()
@@ -152,6 +166,7 @@ def main() -> None:
                     meter.add_stage("depth", depther.last_infer_s)
 
             energy = flowf.energy if flowf is not None else 0.0
+            energy = max(energy, args.energy_floor)
             seed = flowf.centroid if flowf is not None else (0.5, 0.5)
             wind = flowf.wind if flowf is not None else (-1.0, 0.12)
             # 人が動いた分だけ風が進む
@@ -178,6 +193,8 @@ def main() -> None:
                 "uWind": (float(wind[0]), float(wind[1])),
                 "uEnergy": float(energy),
                 "uPaintMix": state.paint_mix,
+                "uHaze": state.haze,
+                "uChroma": state.chroma,
             })
             meter.add_latency(time.perf_counter() - stamp)
 
