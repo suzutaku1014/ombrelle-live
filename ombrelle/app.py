@@ -130,13 +130,13 @@ def main() -> None:
                     help="0=グレーディングのみ 1=完全に絵")
     ap.add_argument("--brush", type=float, default=1.6,
                     help="筆の大きさ。1.0 が原典の値。カメラの近接被写体では大きめが要る")
-    ap.add_argument("--split", type=float, default=1.00,
+    ap.add_argument("--split", type=float, default=0.60,
                     help="色彩分割の強さ。筆の大きさに連動するので、"
                          "筆を変えても見た目の揺らめき量は保たれる")
-    ap.add_argument("--inject", type=float, default=0.18,
+    ap.add_argument("--inject", type=float, default=0.28,
                     help="中性面への色の注入量。白い壁を暖色と寒色で描くための量")
     ap.add_argument("--haze", type=float, default=0.35)
-    ap.add_argument("--chroma", type=float, default=1.35)
+    ap.add_argument("--chroma", type=float, default=1.30)
     ap.add_argument("--energy-floor", type=float, default=0.0,
                     help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
