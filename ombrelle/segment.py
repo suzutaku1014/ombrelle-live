@@ -75,6 +75,7 @@ class SegmentWorker:
         self.last_infer_s = 0.0
         self.dropped = 0
         self.done = 0
+        self.error: str | None = None
 
     def start(self) -> "SegmentWorker":
         self.model = PersonSegmenter()
@@ -97,6 +98,15 @@ class SegmentWorker:
             return self._result
 
     def _loop(self) -> None:
+        # 深度ワーカーと同じ理由で、例外を握り潰さない (ombrelle/depth.py 参照)
+        try:
+            self._run()
+        except Exception as exc:                      # noqa: BLE001
+            import traceback
+            self.error = f"{type(exc).__name__}: {exc}"
+            print(f"[segment worker] 停止しました: {self.error}\n{traceback.format_exc()}", flush=True)
+
+    def _run(self) -> None:
         assert self.model is not None
         while not self._stop.is_set():
             with self._lock:

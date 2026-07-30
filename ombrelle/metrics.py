@@ -75,10 +75,11 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str) -> list[str
     return [
         f"view {int(state.view)}:{_VIEW_NAMES.get(int(state.view), '?')}   "
         f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms",
-        f"depth {depth_source:<9} infer {meter.ms('depth'):5.1f} ms   "
-        f"flow {meter.ms('flow'):4.1f} ms",
+        f"depth {depth_source:<8} {meter.ms('depth'):5.1f}ms   "
+        f"seg {meter.ms('seg'):4.1f}ms   flow {meter.ms('flow'):4.1f}ms",
+        f"compose {'ON  stand ' + format(state.stand, '4.2f') if state.compose > 0.5 else 'OFF'}",
         f"energy {energy:6.4f}   flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}",
         f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  split {state.split:4.2f}",
         "v b brush   t y split   f g inject   k l haze   n m chroma   , . lod",
-        "0-3 view   s shot   p save   d depth   - = paint   h hud   q quit",
+        "c compose   r u stand   0-3 view   s shot   p save   d depth   q quit",
     ]

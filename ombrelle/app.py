@@ -223,6 +223,12 @@ def main() -> None:
                     renderer.update_depth(d)
                     meter.add_stage("depth", depther.last_infer_s)
 
+            # c キーで合成を始めたのにセグメンタが無ければ、その場で起動する
+            # (起動時に --compose を付け忘れても実行中に切り替えられる)
+            if segger is None and state.compose > 0.5:
+                from .segment import SegmentWorker
+                segger = SegmentWorker().start()
+
             if segger is not None:
                 mt = segger.latest()
                 if mt is not None:

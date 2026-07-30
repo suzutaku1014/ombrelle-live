@@ -208,6 +208,8 @@ uv run python -m ombrelle.app --source path/to/video.mp4 --depth teacher
 | キー | |
 |---|---|
 | `0` `1` `2` `3` | 筆触 / 生カメラ / 深度 / フローの場 |
+| `c` | **モネ風の風景へ合成** ↔ 現実の絵化 を切り替え |
+| `r` `u` | 合成時に人物が立つ奥行き |
 | `d` | teacher ↔ student ↔ off を切り替え (同じ画面で比較できる) |
 | `k` `l` | 空気遠近の霞を弱く / 強く |
 | `n` `m` | 彩度を下げる / 上げる |

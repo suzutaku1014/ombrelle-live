@@ -175,6 +175,7 @@ class DepthWorker:
         self.dropped = 0
         self.done = 0
         self.error: str | None = None
+        self.traceback: str | None = None
 
     def _model(self, kind: str):
         if kind not in self._models:
@@ -203,6 +204,19 @@ class DepthWorker:
             return self._result
 
     def _loop(self) -> None:
+        # スレッドの中で例外が出ると、Python はそのスレッドだけを静かに終わらせる。
+        # ワーカーが死んでも描画は前回の深度を使い続けるので**何事も無かったように動く**。
+        # 実際これで student の結果が 1 つも出ない状態に気づくのが遅れた。
+        # 落ちたことを必ず記録し、終了時に表示する。
+        try:
+            self._run()
+        except Exception as exc:                      # noqa: BLE001
+            import traceback
+            self.error = f"{type(exc).__name__}: {exc}"
+            self.traceback = traceback.format_exc()
+            print(f"[depth worker] 停止しました: {self.error}\n{self.traceback}", flush=True)
+
+    def _run(self) -> None:
         while not self._stop.is_set():
             with self._lock:
                 frame, self._pending = self._pending, None
