@@ -123,10 +123,11 @@ def main() -> None:
     ap.add_argument("--cam-lod", type=float, default=2.0)
     ap.add_argument("--paint-mix", type=float, default=1.0,
                     help="0=グレーディングのみ 1=完全に絵")
-    ap.add_argument("--brush", type=float, default=2.0,
+    ap.add_argument("--brush", type=float, default=1.6,
                     help="筆の大きさ。1.0 が原典の値。カメラの近接被写体では大きめが要る")
-    ap.add_argument("--split", type=float, default=0.40,
-                    help="色彩分割の強さ(暖色側/寒色側への振り分け)")
+    ap.add_argument("--split", type=float, default=0.50,
+                    help="色彩分割の強さ。筆の大きさに連動するので、"
+                         "筆を変えても見た目の揺らめき量は保たれる")
     ap.add_argument("--haze", type=float, default=0.35)
     ap.add_argument("--chroma", type=float, default=1.25)
     ap.add_argument("--energy-floor", type=float, default=0.0,

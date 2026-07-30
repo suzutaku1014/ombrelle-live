@@ -25,7 +25,7 @@ from ombrelle.gl.renderer import Renderer
 from ombrelle.source import open_source
 
 DEFAULTS = {
-    "brush": 2.0, "split": 0.40, "haze": 0.35, "chroma": 1.25,
+    "brush": 1.6, "split": 0.50, "haze": 0.35, "chroma": 1.25,
     "cam_lod": 2.0, "flow_gain": 1.5, "paint_mix": 1.0,
 }
 
@@ -33,6 +33,7 @@ PRESETS = {
     "overview": {"brush": [1.2, 2.4, 3.6], "split": [0.0, 0.35, 0.7]},
     "brush":    {"brush": [0.8, 1.4, 2.0, 2.8, 3.6, 5.0]},
     "color":    {"chroma": [1.0, 1.3, 1.6], "split": [0.2, 0.45, 0.7]},
+    "division": {"brush": [0.7, 1.2, 2.0], "split": [0.3, 0.6, 0.9]},
     "haze":     {"haze": [0.0, 0.3, 0.6, 0.9]},
     "lod":      {"cam_lod": [0.5, 1.5, 2.5, 3.5]},
 }
