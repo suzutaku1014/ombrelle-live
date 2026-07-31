@@ -151,6 +151,8 @@ def main() -> None:
     ap.add_argument("--chroma", type=float, default=1.30)
     ap.add_argument("--energy-floor", type=float, default=0.0,
                     help="風の最低値。動いていなくても絵を動かしたいとき / 検証用")
+    ap.add_argument("--fps", type=float, default=60.0,
+                    help="描画の上限 fps。0 で無制限")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
     # config.json があればそれを既定値にする。明示した引数の方が優先される
@@ -178,15 +180,13 @@ def main() -> None:
     flowf = None if args.no_flow else FlowField()
     wb = WhiteBalance()
 
-    segger = None
-    if args.compose:
-        from .segment import SegmentWorker
-        segger = SegmentWorker().start()
-
-    depther = None
-    if args.depth != "off":
-        from .depth import DepthWorker
-        depther = DepthWorker(kind=args.depth, ckpt=args.student_ckpt).start()
+    # 深度とマットは 1 本のスレッドで回す。2 本にすると GL のメインスレッドと
+    # 合わせて 3 経路が同じ GPU を奪い合い、間欠的にハングする (ombrelle/vision.py 参照)
+    vision = None
+    if args.depth != "off" or args.compose:
+        from .vision import VisionWorker
+        vision = VisionWorker(depth_kind=args.depth, ckpt=args.student_ckpt,
+                              want_matte=args.compose).start()
 
     latest_depth: np.ndarray | None = None
     last_seq = -1
@@ -211,29 +211,21 @@ def main() -> None:
                     flowf.update(frame, stamp)
                     meter.add_stage("flow", time.perf_counter() - s)
                     renderer.update_flow(flowf.field)
-                if depther is not None:
-                    depther.submit(frame)
-                if segger is not None:
-                    segger.submit(frame)
+                if vision is not None:
+                    vision.submit(frame)
 
-            if depther is not None:
-                d = depther.latest()
+            if vision is not None:
+                # c キーで合成を始めたら、その場でマットも作らせる
+                vision.want_matte = state.compose > 0.5
+                d = vision.latest_depth()
                 if d is not None:
                     latest_depth = d
                     renderer.update_depth(d)
-                    meter.add_stage("depth", depther.last_infer_s)
-
-            # c キーで合成を始めたのにセグメンタが無ければ、その場で起動する
-            # (起動時に --compose を付け忘れても実行中に切り替えられる)
-            if segger is None and state.compose > 0.5:
-                from .segment import SegmentWorker
-                segger = SegmentWorker().start()
-
-            if segger is not None:
-                mt = segger.latest()
+                    meter.add_stage("depth", vision.depth_s)
+                mt = vision.latest_matte()
                 if mt is not None:
                     renderer.update_matte(mt)
-                    meter.add_stage("seg", segger.last_infer_s)
+                    meter.add_stage("seg", vision.matte_s)
 
             energy = flowf.energy if flowf is not None else 0.0
             energy = max(energy, args.energy_floor)
@@ -244,7 +236,7 @@ def main() -> None:
 
             if state.hud and t - hud_at > 0.25:
                 hud_at = t
-                src = state.depth_kind if depther is not None else "off"
+                src = state.depth_kind if vision is not None else "off"
                 renderer.update_hud(
                     build_hud(renderer.render_w, renderer.render_h,
                               hud_lines(meter, state, energy, src))
@@ -304,13 +296,24 @@ def main() -> None:
             if args.frames and n >= args.frames:
                 break
 
+            # 描画の上限。速いこと自体は目的ではないので、GPU と電力を推論に残す。
+            #
+            # 注: 当初これを「深度が更新されなくなる」問題の対策として入れたが、
+            # **その仮説は測って否定された** (40fps でも無制限の 120fps でも同様に起きた)。
+            # 真因はワーカースレッドが 2 本あったことで、vision.py に統合して解決した。
+            # この上限自体は無害で有用なので残してある。
+            if args.fps > 0.0:
+                spare = (1.0 / args.fps) - (time.perf_counter() - meter._last)
+                if spare > 0.0005:
+                    time.sleep(spare)
+
         if args.shot:
             print(f"saved {renderer.screenshot(args.shot)}")
         el = time.perf_counter() - t0
         # 単体のレイテンシではなく「描画と GPU を共有した状態で深度の場が
         # 毎秒何回更新されたか」が体験に効く量。捨てた入力フレーム数も一緒に出す。
-        dhz = (depther.done / el) if depther is not None else 0.0
-        drop = depther.dropped if depther is not None else 0
+        dhz = (vision.done / el) if vision is not None else 0.0
+        drop = vision.dropped if vision is not None else 0
         print(
             f"frames={n} elapsed={el:.1f}s fps={meter.fps:.1f} e2e={meter.latency_ms:.1f}ms "
             f"flow={meter.ms('flow'):.1f}ms depth_infer={meter.ms('depth'):.1f}ms "
@@ -318,10 +321,8 @@ def main() -> None:
         )
     finally:
         cam.stop()
-        if depther is not None:
-            depther.stop()
-        if segger is not None:
-            segger.stop()
+        if vision is not None:
+            vision.stop()
         renderer.close()
 
 

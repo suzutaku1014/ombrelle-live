@@ -271,6 +271,9 @@ vec3 inject(vec3 c, float amt, float jit){
 }
 
 
+// 前方宣言 (茎は風景より後ろで定義されるが、風景から呼ぶ)
+vec4 stalks(vec2 q, float t, out float sd);
+
 // ---------------------------------------------------------------- モネ風の風景
 // reference/ombrelle_v11_3.frag の renderScene() から**風景だけ**を移植した。
 // 花びらと光溜まりは移植していない。こちらには既にフロー(人の動き)で駆動する版があり、
@@ -342,7 +345,18 @@ vec3 ombrelleScene(vec2 q, float t){
     g = mix(g, GRASS_SHD, smoothstep(0.35, 1.0, q.x)*smoothstep(0.30, 0.02, q.y)*0.60);
     col = mix(col, g, edge);
   }
+  // 中景の茎
+  float sd;
+  vec4 st = stalks(q, t, sd);
+  col = mix(col, st.rgb, st.a);
   return col;
+}
+
+// 茎を含めた風景の深度。合成の深度テストはこちらを見る
+float sceneDepthFull(vec2 q, float t){
+  float sd;
+  vec4 st = stalks(q, t, sd);
+  return max(sceneDepth(q), sd);
 }
 
 // 人物を絵の光へ合わせ直す。
@@ -360,6 +374,130 @@ vec3 relight(vec3 c){
 float matteAt(vec2 q){
   if (uHasMatte < 0.5 || uCompose < 0.5) return 1.0;   // 合成しないなら全部が「人物」= 現実
   return clamp(texture(uMatte, img(clamp(q, 0.0, 1.0))).r, 0.0, 1.0);
+}
+
+
+
+// ---------------------------------------------------------------- 中景の茎
+// 「手前に草の帯がある」だけでは、まだ層が 2 枚しかない。
+// **人物より手前のものと奥のものが同時にある**と、初めて空間として読める。
+//
+// 茎ごとに固定の深度を持たせる。合成側は深度テストなので、
+// 人物 (uStand) より深い茎は自動で手前に、浅い茎は自動で奥になる。
+// 人が左右に歩けば、茎の間を抜けたり回り込んだりする。
+// x位置 / 深度 / 高さ
+vec3 stalkDef(int i){
+  if (i == 0) return vec3(0.10, 0.97, 0.78);   // 手前・高い
+  if (i == 1) return vec3(0.31, 0.58, 0.42);   // 奥
+  if (i == 2) return vec3(0.62, 0.90, 0.68);   // 手前・高い
+  if (i == 3) return vec3(0.79, 0.50, 0.36);   // 奥
+  if (i == 4) return vec3(0.94, 0.94, 0.60);   // 手前
+  return              vec3(0.47, 0.66, 0.30);  // 中
+}
+
+// 戻り値 rgb=色 a=被覆率、out で最も手前の茎の深度
+vec4 stalks(vec2 q, float t, out float sd){
+  float asp = uRes.x / uRes.y;
+  vec2 w = windF(q, t);
+  vec4 acc = vec4(0.0);
+  sd = 0.0;
+  for (int i = 0; i < 6; i++){
+    vec3 st = stalkDef(i);
+    float dep = st.y;
+    // 手前の茎ほど太く、風で大きく傾ぐ (根元は動かない)
+    float rise = clamp(q.y / max(st.z, 1e-3), 0.0, 1.0);
+    float lean = w.x * 0.055 * dep * rise * rise;
+    float dx = (q.x - st.x - lean) * asp;
+    float wdt = (0.010 + 0.020*dep) * (1.0 - 0.50*rise);
+    float body = smoothstep(wdt, wdt*0.3, abs(dx)) * smoothstep(st.z, st.z*0.80, q.y);
+    // 穂 (花): 深度に応じた大きさ。ここが「物」として読める要
+    vec2 hd = vec2(dx, (q.y - st.z*0.94));
+    float a2 = atan(hd.y, hd.x);
+    float rr = (0.030 + 0.028*dep)*(0.74 + 0.26*cos(5.0*a2 + float(i)*1.7));
+    float head = smoothstep(rr, rr*0.55, length(vec2(hd.x, hd.y*1.35)));
+    float cov = clamp(body + head, 0.0, 1.0);
+    if (cov > 0.002){
+      float h = hash11(float(i)*5.7);
+      vec3 c = mix(GRASS_SHD, GRASS_SUN, 0.30 + 0.55*h);
+      // 花は暖色。奥の花ほど霞に沈むので、後段の空気遠近と併せて距離が読める
+      vec3 fl = mix(vec3(1.02, 0.84, 0.86), vec3(1.02, 0.93, 0.62), h);
+      c = mix(c, fl, head*0.92);
+      c = mix(c, vec3(0.98, 0.78, 0.32), smoothstep(rr*0.42, 0.0, length(vec2(hd.x, hd.y*1.35)))*0.8);
+      // 遠い茎は空気に溶かす
+      c = mix(c, HAZE_COOL, (1.0 - dep)*0.45);
+      acc = mix(acc, vec4(c, 1.0), cov);
+      sd = max(sd, dep*step(0.5, cov));
+    }
+  }
+  return acc;
+}
+
+// ---------------------------------------------------------------- 前景
+// 「背景の前に立っている」と「空間の中にいる」の差は、**手前に何かがあるか**。
+// これまで描いていたものは全部人物より奥だったので、書き割りに見えていた。
+//
+// 画面の下から生える草の穂と、いくつかの花を**人物より手前の深度**に置く。
+// あとは合成側の深度テストが自動で人物を隠す。個別のマスクは要らない。
+//
+// 戻り値: rgb = 色、a = 被覆率。深度は fgDepth() が返す
+vec4 foreground(vec2 q, float t){
+  float asp = uRes.x / uRes.y;
+  vec2 w = windF(q, t);
+  vec4 acc = vec4(0.0);
+
+  // 手前の草の穂: 下端から生え、風で傾ぐ。根元は動かず穂先が振れる
+  float x = q.x*asp;
+  for (int i = 0; i < 3; i++){
+    float sc = 26.0 + 11.0*float(i);
+    float ph = float(i)*7.31;
+    float lean = w.x * 0.10;
+    float u = x*sc + ph + lean*sc*q.y*6.0;
+    float h = 0.14 + 0.16*vnoise(vec2(floor(u), ph));      // 穂の高さ
+    float bl = fract(u);
+    float wdt = 0.16 + 0.12*vnoise(vec2(floor(u)+3.0, ph));
+    float body = smoothstep(wdt, wdt*0.35, abs(bl - 0.5))  // 縦の帯
+               * smoothstep(h, h*0.55, q.y);               // 上へ細る
+    if (body > 0.001){
+      float lit = 0.35 + 0.5*vnoise(vec2(floor(u)*1.7, ph + 2.0));
+      vec3 c = mix(GRASS_SHD, GRASS_SUN, lit);
+      acc = mix(acc, vec4(c, 1.0), body*0.95);
+    }
+  }
+
+  // 花: 少数を離して置く。人物の前を横切る位置に来ると空間が一気に読める
+  for (int i = 0; i < 7; i++){
+    float fi = float(i);
+    float h1 = hash11(fi*4.11), h2 = hash11(fi*9.77);
+    vec2 fp = vec2(h1, 0.045 + 0.19*h2);
+    fp += w * 0.012 * (0.5 + h2);                          // 風でわずかに揺れる
+    vec2 d = vec2((q.x - fp.x)*asp, q.y - fp.y);
+    float r = length(d);
+    float pet = 0.019 + 0.011*h2;
+    // 五弁の花: 半径を角度で変調する
+    float a = atan(d.y, d.x);
+    float rr = pet*(0.72 + 0.28*cos(5.0*a + fi));
+    float m = smoothstep(rr, rr*0.55, r);
+    if (m > 0.001){
+      vec3 c = mix(vec3(1.02, 0.86, 0.86), vec3(1.02, 0.94, 0.66), h1);
+      c = mix(c, vec3(0.98, 0.80, 0.35), smoothstep(pet*0.45, 0.0, r));  // 芯
+      acc = mix(acc, vec4(c, 1.0), m);
+    }
+  }
+  return acc;
+}
+
+// 前景は人物より手前に置く。uStand より確実に大きくする
+float fgDepth(){ return clamp(uStand + 0.18, 0.0, 1.0); }
+
+// 接地の影。人物の**真上**にマットがある地面を暗くする。
+// 足元に影が無いと、どれだけ前後関係を作っても figure が浮いたままになる。
+float contactShadow(vec2 q){
+  float s = 0.0;
+  for (int i = 1; i <= 6; i++){
+    float dy = float(i) * 0.013;
+    s = max(s, matteAt(q + vec2(0.0, dy)) * (1.0 - float(i)/7.0));
+  }
+  return s;
 }
 
 // ---------------------------------------------------------------- 花びら
@@ -411,10 +549,12 @@ vec3 petals(vec3 col, vec2 q, float sceneD, float t){
 // こうしないと、筆サイズ・空気遠近・花びらのオクルージョンが人物と丘で別々に
 // 振る舞い、境界が見える。
 float depthComposite(vec2 q){
-  float m = matteAt(q);
   if (uCompose < 0.5) return depthAt(q);
+  float m  = matteAt(q);
   float pd = clamp(uStand + (depthAt(q) - 0.5)*0.25, 0.0, 1.0);
-  return mix(sceneDepth(q), pd, m);
+  float sd = sceneDepthFull(q, uTime);
+  float vis = m * smoothstep(pd + 0.03, pd - 0.03, sd);
+  return mix(sd, pd, vis);
 }
 
 vec3 scenePainterly(vec2 q, float t, float lod){
@@ -428,8 +568,23 @@ vec3 scenePainterly(vec2 q, float t, float lod){
     //   絵具の載せ方 (compand / divide / 楕円の探索) は**合成後に一様**。
     //     ここを分けると継ぎ目で筆の挙動が変わって必ず見える。
     // **合成は筆触パスの前**なので、同じ一筆が境界をまたぎ、マットの粗さは筆に隠れる。
+    float m  = matteAt(q);
+    float pd = clamp(uStand + (depthAt(q) - 0.5)*0.25, 0.0, 1.0);
+
+    vec3 land = ombrelleScene(q, t);
+    // 接地の影: 人物の真下の地面を沈める
+    land *= 1.0 - 0.45*contactShadow(q)*smoothstep(0.0, 0.25, sceneDepth(q));
+
     vec3 person = aerial(grade(relight(camAt(q, lod))), d, q);
-    c = mix(ombrelleScene(q, t), person, matteAt(q));
+
+    // **マットではなく深度で決める**。風景の方が手前なら風景が勝つ。
+    // これで画面下の近い草が人物の足元を隠し、「草の中に立っている」になる。
+    float vis = m * smoothstep(pd + 0.03, pd - 0.03, sceneDepthFull(q, t));
+    c = mix(land, person, vis);
+
+    // 前景 (手前の草の穂と花) は最後に、人物より手前として乗せる
+    vec4 fg = foreground(q, t);
+    if (fg.a > 0.001 && fgDepth() > pd - 0.02) c = mix(c, fg.rgb, fg.a);
   } else {
     c = grade(camAt(q, lod));
     c = aerial(c, d, q);
