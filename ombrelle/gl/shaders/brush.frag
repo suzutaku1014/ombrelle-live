@@ -42,6 +42,7 @@ uniform float uBrush;      // 筆の大きさ。これが「絵に見えるか�
 uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/寒色側へ振り分ける量)
 uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。これで割ってから絵の色を決める
 uniform float uInject;     // 中性面への色の注入量。分割は平均を保存するので彩度は増えない
+uniform float uMemory;     // 記憶色(肌)の保護。肌の近くだけ色相の振れ幅を抑える
 uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
 uniform float uHasMatte;
 uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
@@ -793,7 +794,25 @@ void main(){
     col = compand(col, uChroma * (0.92 + 0.24*(h2r - 0.5)), d);
 
     float dlt = uSplit * (0.30 + 0.70*d) * 1.90 / max(bs, 0.4);
-    dlt = min(dlt, 1.90);                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
+    dlt = min(dlt, 1.90);
+
+    // ---- 記憶色 (肌) の保護 ----
+    // 色相の振れ幅を全色相に一律で掛けていたが、**肌だけは気持ち悪くなる**。
+    // 人は肌の色ズレに極端に敏感で (放送機器に肌色補正が入っているのもそのため)、
+    // 草や壁で心地よい振れ幅でも、肌に緑が乗ると生理的に拒否される。
+    //
+    // 対立色平面での角度を測ると、肌は -0.77rad、木 -0.87rad に対し、
+    // 草 -2.11rad / 空 +2.04rad と十分離れている。肌の周りだけ狙って抑えられる。
+    if (uMemory > 0.001){
+      float Yc = dot(col, LW);
+      vec2 vc = vec2(col.r - Yc, col.b - Yc);
+      if (dot(vc, vc) > 1e-8){
+        const float SKIN_ANG = -0.78;
+        float dd = abs(atan(vc.y, vc.x) - SKIN_ANG);
+        dd = min(dd, 6.28318 - dd);                       // 円周上の距離
+        dlt *= mix(1.0 - 0.72*uMemory, 1.0, smoothstep(0.35, 0.78, dd));
+      }
+    }                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
     if (dlt > 1e-3){
       // 分離角は筆ごとに**連続分布**から引く。
       // ±Δ の二値にすると局所色ごとに色が 2 つしか現れず、

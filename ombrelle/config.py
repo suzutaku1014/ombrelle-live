@@ -18,7 +18,7 @@ from pathlib import Path
 CONFIG_PATH = Path("config.json")
 
 # 保存対象。ここに無いものは実行ごとの状態であって意匠ではない
-KEYS = ("haze", "chroma", "brush", "split", "inject", "flow_gain", "cam_lod", "paint_mix", "energy_floor")
+KEYS = ("haze", "chroma", "brush", "split", "inject", "memory", "flow_gain", "cam_lod", "paint_mix", "energy_floor")
 
 
 def load(path: Path = CONFIG_PATH) -> dict:
@@ -38,6 +38,7 @@ def save(state, energy_floor: float, path: Path = CONFIG_PATH) -> Path:
         "brush": round(float(state.brush), 3),
         "split": round(float(state.split), 3),
         "inject": round(float(state.inject), 3),
+        "memory": round(float(state.memory), 3),
         "flow_gain": round(float(state.flow_gain), 3),
         "cam_lod": round(float(state.cam_lod), 3),
         "paint_mix": round(float(state.paint_mix), 3),
@@ -54,6 +55,7 @@ def snapshot(state, energy_floor: float, extra: dict | None = None) -> dict:
         "brush": round(float(state.brush), 3),
         "split": round(float(state.split), 3),
         "inject": round(float(state.inject), 3),
+        "memory": round(float(state.memory), 3),
         "flow_gain": round(float(state.flow_gain), 3),
         "cam_lod": round(float(state.cam_lod), 3),
         "paint_mix": round(float(state.paint_mix), 3),

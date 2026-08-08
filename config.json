@@ -4,6 +4,7 @@
   "brush": 1.6,
   "split": 0.6,
   "inject": 0.28,
+  "memory": 0.9,
   "flow_gain": 1.5,
   "cam_lod": 2.0,
   "paint_mix": 1.0,

@@ -39,6 +39,7 @@ class State:
         self.brush = args.brush
         self.split = args.split
         self.inject = args.inject
+        self.memory = args.memory
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
         self.hud = not args.no_hud
@@ -94,6 +95,10 @@ def make_key_callback(state: State):
             state.inject = max(0.0, state.inject - 0.02)
         elif key == glfw.KEY_G:
             state.inject = min(0.6, state.inject + 0.02)
+        elif key == glfw.KEY_I:
+            state.memory = max(0.0, state.memory - 0.05)
+        elif key == glfw.KEY_O:
+            state.memory = min(1.0, state.memory + 0.05)
         elif key == glfw.KEY_C:
             state.compose = 0.0 if state.compose > 0.5 else 1.0
         elif key == glfw.KEY_R:
@@ -143,6 +148,8 @@ def main() -> None:
                          "筆を変えても見た目の揺らめき量は保たれる")
     ap.add_argument("--inject", type=float, default=0.28,
                     help="中性面への色の注入量。白い壁を暖色と寒色で描くための量")
+    ap.add_argument("--memory", type=float, default=0.90,
+                    help="記憶色(肌)の保護。肌の近くの色相だけ振れ幅を抑える。0で保護なし")
     ap.add_argument("--compose", action="store_true",
                     help="人物をモネ風の風景の中へ合成する (実行中は c キー)")
     ap.add_argument("--stand", type=float, default=0.75,
@@ -260,6 +267,7 @@ def main() -> None:
                 "uBrush": state.brush,
                 "uSplit": state.split,
                 "uInject": state.inject,
+                "uMemory": state.memory,
                 "uCompose": state.compose,
                 "uStand": state.stand,
                 "uWhite": tuple(float(x) for x in wb.gain),
