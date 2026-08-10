@@ -104,11 +104,12 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str,
         f"compose {'ON  stand ' + format(state.stand, '4.2f') if state.compose > 0.5 else 'OFF'}",
         # raw は不感帯を掛ける前。静止時にこれを読んで dead を決める
         f"energy {energy:6.4f} (raw {raw_energy:6.4f})   dead {state.flow_dead:4.2f}   "
-        f"flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}   idleWind {state.idle_wind:4.2f}",
+        f"flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}   "
+        f"camEMA {state.cam_ema:4.2f}   idleWind {state.idle_wind:4.2f}",
         f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  "
         f"split {state.split:4.2f}   色空間 {'Oklab' if getattr(state, 'oklab', 0.0) > 0.5 else 'luma'}",
         *palette,
         "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod  w e wind",
         "c compose  r u stand  0-3 view  s shot  p save  d depth  a palette  j oklab",
-        "; ' flow-dead   x stabilize   h hud   q quit",
+        "z cam-ema   ; ' flow-dead   x stabilize   h hud   q quit",
     ]

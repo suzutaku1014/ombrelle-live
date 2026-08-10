@@ -19,7 +19,7 @@ CONFIG_PATH = Path("config.json")
 
 # 保存対象。ここに無いものは実行ごとの状態であって意匠ではない
 KEYS = ("haze", "chroma", "brush", "split", "inject", "memory", "idle_wind",
-        "flow_gain", "flow_dead", "cam_lod", "paint_mix", "energy_floor")
+        "flow_gain", "flow_dead", "cam_ema", "cam_lod", "paint_mix", "energy_floor")
 
 
 def load(path: Path = CONFIG_PATH) -> dict:
@@ -43,6 +43,7 @@ def save(state, energy_floor: float, path: Path = CONFIG_PATH) -> Path:
         "idle_wind": round(float(state.idle_wind), 3),
         "flow_gain": round(float(state.flow_gain), 3),
         "flow_dead": round(float(state.flow_dead), 3),
+        "cam_ema": round(float(state.cam_ema), 3),
         "cam_lod": round(float(state.cam_lod), 3),
         "paint_mix": round(float(state.paint_mix), 3),
         "energy_floor": round(float(energy_floor), 4),
@@ -62,6 +63,7 @@ def snapshot(state, energy_floor: float, extra: dict | None = None) -> dict:
         "idle_wind": round(float(state.idle_wind), 3),
         "flow_gain": round(float(state.flow_gain), 3),
         "flow_dead": round(float(state.flow_dead), 3),
+        "cam_ema": round(float(state.cam_ema), 3),
         "cam_lod": round(float(state.cam_lod), 3),
         "paint_mix": round(float(state.paint_mix), 3),
         "energy_floor": round(float(energy_floor), 4),

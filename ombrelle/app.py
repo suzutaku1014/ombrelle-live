@@ -43,6 +43,7 @@ class State:
         self.memory = args.memory
         self.idle_wind = args.idle_wind
         self.flow_dead = args.flow_dead
+        self.cam_ema = args.cam_ema
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
         # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
@@ -112,6 +113,11 @@ def make_key_callback(state: State):
             state.memory = max(0.0, state.memory - 0.05)
         elif key == glfw.KEY_O:
             state.memory = min(1.0, state.memory + 0.05)
+        elif key == glfw.KEY_Z:
+            # 段階を回す。連続で振るより、効いているか効いていないかを見る方が速い
+            steps = [0.0, 0.50, 0.70, 0.85]
+            nxt = next((v for v in steps if v > state.cam_ema + 1e-6), steps[0])
+            state.cam_ema = nxt
         elif key == glfw.KEY_SEMICOLON:
             state.flow_dead = max(0.0, state.flow_dead - 0.01)
         elif key == glfw.KEY_APOSTROPHE:
@@ -167,6 +173,9 @@ def main() -> None:
     ap.add_argument("--no-hud", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
+    ap.add_argument("--cam-ema", type=float, default=0.70,
+                    help="入力の時間平滑化。センサノイズで筆の色が明滅するのを抑える。"
+                         "動いている間は自動で外れる。0で無効 (実行中は z)")
     ap.add_argument("--flow-dead", type=float, default=0.08,
                     help="フローの不感帯。実カメラはノイズで常に流れが出るので、"
                          "これ未満は動きとみなさない (実行中は ; ')")
@@ -269,6 +278,7 @@ def main() -> None:
 
     latest_depth: np.ndarray | None = None
     latest_matte: np.ndarray | None = None
+    cam_smooth: np.ndarray | None = None
     last_seq = -1
     energy = 0.0
     adv = 0.0
@@ -293,7 +303,19 @@ def main() -> None:
             frame, stamp, seq = cam.latest()
             if frame is not None and seq != last_seq:
                 last_seq = seq
-                renderer.update_camera(frame)
+                # 一筆は入力の 1 点をサンプルするので、センサノイズがそのまま
+                # 筆 1 枚分の色になる。筆は大きいので、面ごと明滅して見える。
+                # 空間ぼかし (cam_lod) を上げると細部まで失うが、時間方向なら
+                # 静止したものの細部は保ったままノイズだけ落ちる。
+                #
+                # 動いている間は外す。残像が出るうえ、動きがある間は
+                # ちらつき自体が目立たない。energy は 1 フレーム前の値で足りる
+                a = state.cam_ema * (1.0 - min(energy / 0.20, 1.0))
+                if a > 0.01 and cam_smooth is not None and cam_smooth.shape == frame.shape:
+                    cam_smooth = cv2.addWeighted(cam_smooth, a, frame, 1.0 - a, 0.0)
+                else:
+                    cam_smooth = frame
+                renderer.update_camera(cam_smooth)
                 wb.update(frame)
                 if flowf is not None:
                     s = time.perf_counter()
