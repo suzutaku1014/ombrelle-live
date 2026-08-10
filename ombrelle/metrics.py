@@ -92,10 +92,10 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str,
     if getattr(state, "palette", False):
         palette = [palette_line("in", stats_in), palette_line("out", stats_out)]
         if getattr(state, "stabilize", False) and stab is not None:
-            palette.append(f"stabilize ON   人物の彩度 x{stab.subj_chroma:4.2f}   "
-                           f"分割 x{stab.split_scale:4.2f}")
+            palette.append(f"stabilize ON   subjChroma x{stab.subj_chroma:4.2f}   "
+                           f"split x{stab.split_scale:4.2f}")
     else:
-        palette = ["palette  off  (a で計測  x で自動補正)"]
+        palette = ["palette  off   (a=measure  x=auto)"]
     return [
         f"view {int(state.view)}:{_VIEW_NAMES.get(int(state.view), '?')}   "
         f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms",
@@ -106,10 +106,12 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str,
         f"energy {energy:6.4f} (raw {raw_energy:6.4f})   dead {state.flow_dead:4.2f}   "
         f"flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}   "
         f"camEMA {state.cam_ema:4.2f}   idleWind {state.idle_wind:4.2f}",
+        f"orientDepth {state.orient_depth:4.2f}   depthBlur {state.depth_blur:4.1f}px",
         f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  "
-        f"split {state.split:4.2f}   色空間 {'Oklab' if getattr(state, 'oklab', 0.0) > 0.5 else 'luma'}",
+        f"split {state.split:4.2f}   space {'oklab' if getattr(state, 'oklab', 0.0) > 0.5 else 'luma '}",
         *palette,
         "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod  w e wind",
         "c compose  r u stand  0-3 view  s shot  p save  d depth  a palette  j oklab",
-        "z cam-ema   ; ' flow-dead   x stabilize   h hud   q quit",
+        "4 5 orient-depth   6 7 depth-blur   z cam-ema   ; ' flow-dead",
+        "8 motion-probe   x stabilize   h hud   q quit",
     ]

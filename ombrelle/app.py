@@ -26,6 +26,7 @@ from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
 from .palette import PaletteMeter, Stabilizer
+from .record import MotionProbe
 from .source import open_source
 
 
@@ -44,6 +45,8 @@ class State:
         self.idle_wind = args.idle_wind
         self.flow_dead = args.flow_dead
         self.cam_ema = args.cam_ema
+        self.orient_depth = args.orient_depth
+        self.depth_blur = args.depth_blur
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
         # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
@@ -59,6 +62,7 @@ class State:
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
+        self.probe = False
         self.save = False
         self.depth_kind = args.depth  # "teacher" | "student" | "off"
 
@@ -113,6 +117,16 @@ def make_key_callback(state: State):
             state.memory = max(0.0, state.memory - 0.05)
         elif key == glfw.KEY_O:
             state.memory = min(1.0, state.memory + 0.05)
+        elif key == glfw.KEY_8:
+            state.probe = True
+        elif key == glfw.KEY_4:
+            state.orient_depth = max(0.0, state.orient_depth - 0.1)
+        elif key == glfw.KEY_5:
+            state.orient_depth = min(1.0, state.orient_depth + 0.1)
+        elif key == glfw.KEY_6:
+            state.depth_blur = max(0.0, state.depth_blur - 0.5)
+        elif key == glfw.KEY_7:
+            state.depth_blur = min(8.0, state.depth_blur + 0.5)
         elif key == glfw.KEY_Z:
             # 段階を回す。連続で振るより、効いているか効いていないかを見る方が速い
             steps = [0.0, 0.50, 0.70, 0.85]
@@ -173,6 +187,12 @@ def main() -> None:
     ap.add_argument("--no-hud", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
+    ap.add_argument("--orient-depth", type=float, default=1.0,
+                    help="筆の向きが深度にどれだけ従うか。0=深度を無視して筋目だけ "
+                         "1=従来 (実行中は 4 5)")
+    ap.add_argument("--depth-blur", type=float, default=0.0,
+                    help="深度マップの空間ぼかし(画素)。ノイズは高周波なのでここで落ちる "
+                         "(実行中は 6 7)")
     ap.add_argument("--depth-ema", type=float, default=0.70,
                     help="深度マップの時間平滑化。平らな面で筆の向きが回り続けるのを抑える")
     ap.add_argument("--cam-ema", type=float, default=0.70,
@@ -213,6 +233,9 @@ def main() -> None:
                     help="描画の上限 fps。0 で無制限")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
+    ap.add_argument("--probe", type=int, default=0, metavar="N",
+                    help=">0 なら準備完了後に N フレーム連続で読み戻し、"
+                         "どこがどれだけ動いているかの地図を出して終了 (実行中は 8 キー)")
     ap.add_argument("--wait-ready", action="store_true",
                     help="深度と計測が揃ってから --frames を数え始める(比較画像の生成用)")
     ap.add_argument("--ready-timeout", type=float, default=30.0,
@@ -249,7 +272,8 @@ def main() -> None:
         from .vision import VisionWorker
         vision = VisionWorker(depth_kind=args.depth, ckpt=args.student_ckpt,
                               want_matte=args.compose or args.palette,
-                              depth_ema=args.depth_ema).start()
+                              depth_ema=args.depth_ema,
+                              depth_blur=args.depth_blur).start()
     # 入力(カメラ)と出力(描いた絵)を別々に測る。処理系が彩度比をどう動かしたかは
     # 片方だけ見ても分からない。出力側は FBO の読み戻しで GPU を止めるので低レート
     pal_in = PaletteMeter()
@@ -257,6 +281,8 @@ def main() -> None:
     pal_out_at = 0.0
     PAL_OUT_HZ = 2.0
     stab = Stabilizer()
+    probe = MotionProbe(frames=args.probe if args.probe > 0 else 90)
+    probe_done = False
 
     def shot_meta() -> dict:
         """スクショの脇に置く記録。設定値と実測値を必ず 1 枚と対にする。
@@ -335,6 +361,7 @@ def main() -> None:
                 # c キーで合成を始めたら、その場でマットも作らせる。
                 # 計測 (a キー) もマットを要るので、どちらかが立っていれば作る
                 vision.want_matte = state.compose > 0.5 or state.palette
+                vision.depth_blur = state.depth_blur      # 実行中に 6 7 で触れる
                 d = vision.latest_depth()
                 if d is not None:
                     latest_depth = d
@@ -395,6 +422,7 @@ def main() -> None:
                 "uInject": state.inject,
                 "uMemory": state.memory,
                 "uIdleWind": state.idle_wind,
+                "uOrientDepth": state.orient_depth,
                 "uOklab": state.oklab,
                 "uSubjChroma": stab.subj_chroma,
                 "uSplitScale": stab.split_scale,
@@ -420,6 +448,22 @@ def main() -> None:
 
             ready = ((vision is None or latest_depth is not None or args.depth == "off")
                      and (not state.palette or pal_out.stats is not None))
+
+            # 動きの計測。読み戻しを毎フレームやるので fps は落ちるが、
+            # 時間方向の話は 1 枚の絵では原理的に検証できない
+            if state.probe or (args.probe and ready and not probe.active and not probe_done):
+                state.probe = False
+                probe.start()
+                print(f"動きの計測を開始しました ({probe.frames} フレーム)", flush=True)
+            if probe.active and probe.add(renderer.read_scene()):
+                probe_done = True
+                stem = f"probe-{datetime.now():%Y%m%d-%H%M%S}"
+                st = probe.report(Path("shots") / f"{stem}.png", cfg.snapshot(state, args.energy_floor))
+                print(f"saved shots/{stem}.png + .json  "
+                      f"mean {st['mean']:.2f}  p99 {st['p99']:.2f}  "
+                      f">3 の画素 {st['over_3']*100:.1f}%", flush=True)
+                if args.probe:
+                    break
 
             if state.shot:
                 state.shot = False

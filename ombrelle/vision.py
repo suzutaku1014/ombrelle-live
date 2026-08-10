@@ -30,6 +30,7 @@ from __future__ import annotations
 import threading
 import time
 
+import cv2
 import numpy as np
 
 from .depth import build
@@ -44,12 +45,14 @@ class VisionWorker:
         want_matte: bool = False,
         matte_ema: float = 0.55,
         depth_ema: float = 0.70,
+        depth_blur: float = 0.0,
     ) -> None:
         self.ckpt = ckpt
         self.kind = depth_kind
         self.want_matte = want_matte
         self.matte_ema = matte_ema
         self.depth_ema = depth_ema
+        self.depth_blur = depth_blur
 
         self._models: dict[str, object] = {}
         self._seg = None
@@ -155,6 +158,11 @@ class VisionWorker:
                     self._depth_smooth = (self.depth_ema * self._depth_smooth
                                           + (1.0 - self.depth_ema) * depth)
                 depth = self._depth_smooth.astype(np.float32)
+                # 空間方向のぼかし。ノイズは高周波、顔や体の陰影は低周波なので、
+                # 大きさの閾値では分けられないものが周波数では分けられる
+                if self.depth_blur > 0.0:
+                    depth = cv2.GaussianBlur(depth, (0, 0),
+                                             sigmaX=self.depth_blur, sigmaY=self.depth_blur)
                 self.depth_s = time.perf_counter() - t0
             if want:
                 t0 = time.perf_counter()

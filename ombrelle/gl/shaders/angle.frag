@@ -30,6 +30,7 @@ uniform float uFlowGain;
 uniform vec2  uWind;
 uniform float uEnergy;
 uniform float uIdleWind;   // 静止時の微風。0=誰も動かなければ筆も止まる / 1=従来
+uniform float uOrientDepth;// 筆の向きが深度にどれだけ従うか。0=深度を無視して筋目だけ / 1=従来
 
 float hash21(vec2 p){
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -119,7 +120,11 @@ void main(){
   // 大きさの閾値は元のまま。ここを上げるとノイズも落ちるが、顔のような
   // ゆるい陰影の勾配まで切り捨てて、筆が形をなぞらなくなる (試して却下した)。
   // ノイズと弱い輪郭を分けるのは大きさではなく coh の仕事。
-  float structW = smoothstep(0.0015, 0.0150, gm) * smoothstep(0.35, 0.85, coh);
+  //
+  // uOrientDepth は「深度への感度」そのもの。深度マップは実カメラでは常に揺れて
+  // いて、平らな面ではその揺れが向きの根拠として採用されてしまう。どこまで
+  // 信じるかは絵を見ないと決められないので、実行時に振れるようにしてある。
+  float structW = smoothstep(0.0015, 0.0150, gm) * smoothstep(0.35, 0.85, coh) * uOrientDepth;
   vec2 base = mix(axisOf(hatchA), axisOf(contourA), structW);
 
   // 動いている所は動きに沿った筆、止まっている所は形をなぞる筆
