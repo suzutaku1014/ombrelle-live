@@ -187,6 +187,10 @@ def main() -> None:
                     help="描画の上限 fps。0 で無制限")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
+    ap.add_argument("--wait-ready", action="store_true",
+                    help="深度と計測が揃ってから --frames を数え始める(比較画像の生成用)")
+    ap.add_argument("--ready-timeout", type=float, default=30.0,
+                    help="揃うのを待つ上限(秒)。超えたら警告して先へ進む")
     # config.json があればそれを既定値にする。明示した引数の方が優先される
     saved = cfg.load()
     if saved:
@@ -227,19 +231,49 @@ def main() -> None:
     PAL_OUT_HZ = 2.0
     stab = Stabilizer()
 
+    def shot_meta() -> dict:
+        """スクショの脇に置く記録。設定値と実測値を必ず 1 枚と対にする。
+
+        s キーでも --shot でも同じものを書く。tools/sweep.py はこれを読んで
+        比較画像に数値を添える
+        """
+        extra = {
+            "source": args.source,
+            "fps": round(meter.fps, 1),
+            "e2e_ms": round(meter.latency_ms, 1),
+            "energy": round(float(energy), 5),
+        }
+        if pal_in.stats is not None:
+            extra["palette_in"] = pal_in.stats.as_dict()
+        if pal_out.stats is not None:
+            extra["palette_out"] = pal_out.stats.as_dict()
+        if state.stabilize:
+            extra["stab"] = {"subj_chroma": round(stab.subj_chroma, 3),
+                             "split_scale": round(stab.split_scale, 3)}
+        return cfg.snapshot(state, args.energy_floor, extra)
+
     latest_depth: np.ndarray | None = None
     latest_matte: np.ndarray | None = None
     last_seq = -1
+    energy = 0.0
     adv = 0.0
     hud_at = 0.0
     t0 = time.perf_counter()
     n = 0
+    ready = False
+    warned = False
 
     try:
         while not renderer.should_close() and not state.quit:
             renderer.poll()
             dt = meter.tick()
             t = time.perf_counter() - t0
+
+            # 絵に渡す時刻は、検証実行 (--frames) では実時間ではなくフレーム番号から作る。
+            # 呼吸 (gustEnv) と粒子感の乱数が uTime に乗っているので、実時間のままだと
+            # 同じ設定でも回すたびに絵が変わり、1 軸だけ振った比較が成立しない
+            step = 1.0 / max(args.fps if args.fps > 0.0 else 60.0, 1.0)
+            ts, dts = (n * step, step) if args.frames else (t, dt)
 
             frame, stamp, seq = cam.latest()
             if frame is not None and seq != last_seq:
@@ -286,7 +320,7 @@ def main() -> None:
             seed = flowf.centroid if flowf is not None else (0.5, 0.5)
             wind = flowf.wind if flowf is not None else (-1.0, 0.12)
             # 人が動いた分だけ風が進む
-            adv += gust_env(t) * (0.30 + 2.5 * energy) * dt
+            adv += gust_env(ts) * (0.30 + 2.5 * energy) * dts
 
             if state.hud and t - hud_at > 0.25:
                 hud_at = t
@@ -300,7 +334,7 @@ def main() -> None:
                 renderer.update_hud(None)
 
             renderer.draw({
-                "uTime": t,
+                "uTime": ts,
                 "uAdv": adv,
                 "uView": state.view,
                 "uFlowGain": state.flow_gain,
@@ -339,27 +373,16 @@ def main() -> None:
                 if state.stabilize:
                     stab.update(pal_out.stats)
 
+            ready = ((vision is None or latest_depth is not None or args.depth == "off")
+                     and (not state.palette or pal_out.stats is not None))
+
             if state.shot:
                 state.shot = False
                 stem = f"{datetime.now():%Y%m%d-%H%M%S}"
                 p = renderer.screenshot(Path("shots") / f"{stem}.png")
                 # どのスクショがどの設定だったかを必ず残す
                 side = p.with_suffix(".json")
-                extra = {
-                    "source": args.source,
-                    "fps": round(meter.fps, 1),
-                    "e2e_ms": round(meter.latency_ms, 1),
-                    "energy": round(float(energy), 5),
-                }
-                # 測ったなら必ずスクショと対にする。後から「この絵のときの
-                # R_C はいくつだったか」を再現なしに引けることが目的
-                if pal_in.stats is not None:
-                    extra["palette_in"] = pal_in.stats.as_dict()
-                if pal_out.stats is not None:
-                    extra["palette_out"] = pal_out.stats.as_dict()
-                side.write_text(
-                    json.dumps(cfg.snapshot(state, args.energy_floor, extra),
-                               indent=2) + "\n", encoding="utf-8")
+                side.write_text(json.dumps(shot_meta(), indent=2) + "\n", encoding="utf-8")
                 # 生のカメラフレームも残す。これがあれば Claude 側で
                 # --source shots/xxx_raw.png として同じ画で意匠を詰められる
                 if frame is not None:
@@ -373,6 +396,17 @@ def main() -> None:
                 state.save = False
                 print(f"saved {cfg.save(state, args.energy_floor)}  ← 次回起動時に自動で読まれます")
 
+            # 検証実行では「準備できてから」数える。深度もマットも非同期なので、
+            # 冷えた状態で数え始めると、比較のつもりの 2 枚が別の状態の絵になる
+            # (実際 sweep の 1 枚目と 2 枚目だけ計測が空だった)。
+            # n は絵に渡す時刻でもあるので、揃えると絵の位相も揃う
+            if args.frames and args.wait_ready and not ready:
+                if t < args.ready_timeout:
+                    continue
+                if not warned:
+                    warned = True
+                    print(f"準備が {args.ready_timeout:.0f}s で整いませんでした。"
+                          f"depth={latest_depth is not None} palette={pal_out.stats is not None}")
             n += 1
             if args.frames and n >= args.frames:
                 break
@@ -389,7 +423,10 @@ def main() -> None:
                     time.sleep(spare)
 
         if args.shot:
-            print(f"saved {renderer.screenshot(args.shot)}")
+            p = renderer.screenshot(args.shot)
+            side = p.with_suffix(".json")
+            side.write_text(json.dumps(shot_meta(), indent=2) + "\n", encoding="utf-8")
+            print(f"saved {p} + {side.name}")
         el = time.perf_counter() - t0
         # 単体のレイテンシではなく「描画と GPU を共有した状態で深度の場が
         # 毎秒何回更新されたか」が体験に効く量。捨てた入力フレーム数も一緒に出す。

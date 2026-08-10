@@ -1,165 +1,128 @@
-"""意匠パラメータのスイープ。
+"""同じ入力・同じ時刻で 1 軸だけ振った比較画像を作る。
 
-1 枚の画像に対して複数のパラメータ組を描き、1 枚のコンタクトシートにまとめる。
+なぜ要るか:
 
-絵は目で決めるしかないが、1 パラメータずつ実行し直して記憶で比べるのは効率が悪く、
-判断もぶれる。**同じ画・同じ瞬間で並べて比べる**ための道具。
+意匠は目で決めるものだが、「目で決めた」と「なんとなく触った」は外から区別が
+つかない。1 軸だけを振った並びが 1 枚あれば、どの値をなぜ選んだかが後から
+説明できる。逆に、並べてみて差が読めない軸は触る価値が無かったということ。
 
-    uv run python -m tools.sweep --source shots/xxx_raw.png --grid brush=1.8,3.0 split=0.2,0.5
-    uv run python -m tools.sweep --source shots/xxx_raw.png --preset overview
+決定性について:
+
+絵の側は決定的にできる (app.py は --frames 指定時に uTime をフレーム番号から
+作る)。**深度は決定的にならない**。推論は非同期で、描画を待たせない設計なので、
+実行ごとに更新回数が変わり正規化 EMA の状態がわずかにずれる。静止画を入力に
+すれば収束するので、残差は平均 0.38/255 程度。1 軸を振った差はこれより
+はるかに大きいので比較は成立するが、**画素単位の一致は期待しないこと。**
+
+使い方:
+
+    uv run python tools/sweep.py --source shots/20260730-212438_raw.png --param chroma
+    uv run python tools/sweep.py --source data/clip.mov --all -- --oklab
 """
 
 from __future__ import annotations
 
 import argparse
-import itertools
-import time
+import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from ombrelle.color import WhiteBalance
-from ombrelle.flow import FlowField
-from ombrelle.gl.renderer import Renderer
-from ombrelle.source import open_source
-
-DEFAULTS = {
-    "brush": 1.6, "split": 0.60, "haze": 0.35, "chroma": 1.30, "inject": 0.28, "memory": 0.90,
-    "cam_lod": 2.0, "flow_gain": 1.5, "paint_mix": 1.0,
+# 教科書 §6.2 の順序。土台から順に決め、split から触り始めない
+AXES: dict[str, list[float]] = {
+    "chroma": [0.70, 0.90, 1.10, 1.30],
+    "inject": [0.00, 0.14, 0.28, 0.42],
+    "split":  [0.00, 0.30, 0.60, 0.90],
+    "memory": [0.00, 0.30, 0.60, 0.90],
 }
 
-PRESETS = {
-    "overview": {"brush": [1.2, 2.4, 3.6], "split": [0.0, 0.35, 0.7]},
-    "brush":    {"brush": [0.8, 1.4, 2.0, 2.8, 3.6, 5.0]},
-    "color":    {"chroma": [1.0, 1.3, 1.6], "split": [0.2, 0.45, 0.7]},
-    "division": {"brush": [0.7, 1.2, 2.0], "split": [0.3, 0.6, 0.9]},
-    "haze":     {"haze": [0.0, 0.3, 0.6, 0.9]},
-    "lod":      {"cam_lod": [0.5, 1.5, 2.5, 3.5]},
-}
+OUT_DIR = Path("docs/images")
 
 
-def label(img: np.ndarray, text: str) -> np.ndarray:
+def _run_one(source: str, param: str, value: float, frames: int,
+             passthrough: list[str], tmp: Path) -> tuple[np.ndarray, dict]:
+    shot = tmp / f"{param}_{value:.3f}.png"
+    cmd = [
+        sys.executable, "-m", "ombrelle.app",
+        "--source", source, "--frames", str(frames),
+        "--shot", str(shot), f"--{param}", str(value),
+        "--palette", "--no-hud", "--wait-ready",
+        *passthrough,
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if not shot.exists():
+        raise RuntimeError(f"{param}={value} の実行に失敗しました:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
+    meta_path = shot.with_suffix(".json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    return cv2.imread(str(shot)), meta
+
+
+def _label(img: np.ndarray, lines: list[str]) -> np.ndarray:
     out = img.copy()
-    cv2.rectangle(out, (0, 0), (out.shape[1], 26), (18, 20, 26), -1)
-    cv2.putText(out, text, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
-                (240, 242, 248), 1, cv2.LINE_AA)
+    h = 24 * len(lines) + 14
+    cv2.rectangle(out, (0, 0), (330, h), (18, 20, 26), -1)
+    for i, s in enumerate(lines):
+        cv2.putText(out, s, (12, 24 * (i + 1)), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.62, (238, 240, 246), 2, cv2.LINE_AA)
     return out
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="意匠パラメータのスイープ")
-    ap.add_argument("--source", required=True)
-    ap.add_argument("--depth", choices=["teacher", "student", "off"], default="teacher")
-    ap.add_argument("--student-ckpt", default="checkpoints/student.pt")
-    ap.add_argument("--preset", choices=sorted(PRESETS), default=None)
-    ap.add_argument("--grid", nargs="*", default=[], help="例: brush=1.8,3.0 split=0.2,0.5")
-    ap.add_argument("--fixed", nargs="*", default=[], help="例: haze=0.3 chroma=1.4")
-    ap.add_argument("--width", type=int, default=640)
-    ap.add_argument("--height", type=int, default=360)
-    ap.add_argument("--cols", type=int, default=3)
-    ap.add_argument("--out", default="shots/sweep.png")
-    ap.add_argument("--tiles", default="", help="個別タイルも保存するディレクトリ")
-    ap.add_argument("--compose", action="store_true")
-    ap.add_argument("--stand", type=float, default=0.75)
+def sweep(source: str, param: str, values: list[float], frames: int,
+          passthrough: list[str], scale: float) -> Path:
+    tiles, records = [], []
+    for v in values:
+        img, meta = _run_one(source, param, v, frames, passthrough, Path(tempfile.gettempdir()))
+        pal = meta.get("palette_out") or {}
+        lines = [f"{param} = {v:g}"]
+        if pal:
+            lines.append(f"R_C {pal['R_C']:.2f}  dL {pal['dL']:+.3f}")
+        tiles.append(_label(img, lines))
+        records.append({"value": v, **meta})
+        print(f"  {param}={v:<6g} " + (f"R_C {pal['R_C']:.3f}" if pal else "(人物なし)"), flush=True)
+
+    strip = cv2.hconcat(tiles)
+    if scale != 1.0:
+        strip = cv2.resize(strip, (int(strip.shape[1] * scale), int(strip.shape[0] * scale)),
+                           interpolation=cv2.INTER_AREA)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out = OUT_DIR / f"sweep_{param}.png"
+    cv2.imwrite(str(out), strip)
+    out.with_suffix(".json").write_text(
+        json.dumps({"source": source, "param": param, "frames": frames,
+                    "passthrough": passthrough, "runs": records}, indent=2) + "\n",
+        encoding="utf-8")
+    print(f"→ {out}  ({strip.shape[1]}x{strip.shape[0]})")
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="1 軸だけ振った比較画像を作る")
+    ap.add_argument("--source", required=True, help="静止画 / 動画 / synthetic")
+    ap.add_argument("--param", choices=sorted(AXES), help="振る軸")
+    ap.add_argument("--values", type=float, nargs="+", help="既定の刻みを上書きする")
+    ap.add_argument("--all", action="store_true", help="教科書 §6.2 の順に 4 軸すべて")
+    ap.add_argument("--frames", type=int, default=400,
+                    help="1 枚あたりのフレーム数。深度と正規化が落ち着くまで要る")
+    ap.add_argument("--scale", type=float, default=0.5, help="出力の縮小率")
+    ap.add_argument("rest", nargs="*",
+                    help="`--` の後ろは app.py へそのまま渡す (--oklab --depth student など)")
     args = ap.parse_args()
 
-    axes: dict[str, list[float]] = {}
-    if args.preset:
-        axes.update({k: list(v) for k, v in PRESETS[args.preset].items()})
-    for spec in args.grid:
-        k, v = spec.split("=", 1)
-        axes[k] = [float(x) for x in v.split(",")]
-    if not axes:
-        raise SystemExit("--preset か --grid を指定してください")
+    if not args.all and not args.param:
+        ap.error("--param か --all のどちらかを指定してください")
 
-    base = dict(DEFAULTS)
-    for spec in args.fixed:
-        k, v = spec.split("=", 1)
-        base[k] = float(v)
-
-    src = open_source(args.source, 1280, 720, mirror=False)
-    frame = src.wait_first()
-
-    renderer = Renderer(win_w=args.width, win_h=args.height,
-                        render_w=args.width, render_h=args.height,
-                        title="ombrelle sweep")
-    renderer.update_camera(frame)
-    wb = WhiteBalance(ema=0.0)
-    wb.update(frame)
-    print(f"white balance gain {wb.gain}")
-
-    flowf = FlowField()
-    flowf.update(frame, 0.0)
-    flowf.update(frame, 1 / 60)   # 静止画なのでフローは 0。既定の風だけが残る
-
-    if args.compose:
-        from ombrelle.segment import PersonSegmenter
-        renderer.update_matte(PersonSegmenter().infer(frame))
-        print("matte ready")
-
-    depth_arr = None
-    if args.depth != "off":
-        from ombrelle.depth import build
-        from ombrelle.normalize import DepthNormalizer
-        model = build(args.depth, args.student_ckpt)
-        depth_arr = DepthNormalizer()(model.infer(frame))
-        renderer.update_depth(depth_arr)
-        print(f"depth[{args.depth}] {depth_arr.shape}")
-
-    def seed_depth(xy):
-        if depth_arr is None:
-            return 0.6
-        h, w = depth_arr.shape[:2]
-        return float(depth_arr[int((1 - xy[1]) * (h - 1)), int(xy[0] * (w - 1))])
-
-    keys = list(axes)
-    combos = list(itertools.product(*(axes[k] for k in keys)))
-    print(f"{len(combos)} 通り: " + " x ".join(f"{k}{axes[k]}" for k in keys))
-
-    tiles = []
-    tile_dir = Path(args.tiles) if args.tiles else None
-    if tile_dir:
-        tile_dir.mkdir(parents=True, exist_ok=True)
-
-    for combo in combos:
-        cfg = dict(base)
-        cfg.update(dict(zip(keys, combo)))
-        renderer.draw({
-            "uTime": 8.0, "uAdv": 4.0, "uView": 0.0,
-            "uFlowGain": cfg["flow_gain"], "uCamLod": cfg["cam_lod"],
-            "uSeed": (float(flowf.centroid[0]), float(flowf.centroid[1])),
-            "uSeedDepth": seed_depth(flowf.centroid),
-            "uWind": (float(flowf.wind[0]), float(flowf.wind[1])),
-            "uEnergy": 0.0, "uPaintMix": cfg["paint_mix"],
-            "uHaze": cfg["haze"], "uChroma": cfg["chroma"],
-            "uBrush": cfg["brush"], "uSplit": cfg["split"], "uInject": cfg["inject"], "uMemory": cfg["memory"],
-            "uWhite": tuple(float(x) for x in wb.gain),
-            "uCompose": 1.0 if args.compose else 0.0, "uStand": args.stand,
-        })
-        raw = renderer.fbo.read(components=3, alignment=1)
-        img = np.flipud(np.frombuffer(raw, np.uint8).reshape(args.height, args.width, 3))
-        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        name = " ".join(f"{k}={cfg[k]:g}" for k in keys)
-        if tile_dir:
-            cv2.imwrite(str(tile_dir / (name.replace(" ", "_").replace("=", "") + ".png")), bgr)
-        tiles.append(label(bgr, name))
-
-    cols = min(args.cols, len(tiles))
-    rows = [tiles[i:i + cols] for i in range(0, len(tiles), cols)]
-    if len(rows[-1]) < cols:
-        pad = np.zeros_like(tiles[0])
-        rows[-1] += [pad] * (cols - len(rows[-1]))
-    sheet = np.vstack([np.hstack(r) for r in rows])
-
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), sheet)
-    print(f"wrote {out}  ({sheet.shape[1]}x{sheet.shape[0]})")
-
-    src.stop()
-    renderer.close()
+    passthrough = [a for a in args.rest if a != "--"]
+    params = list(AXES) if args.all else [args.param]
+    for p in params:
+        vals = args.values if (args.values and not args.all) else AXES[p]
+        print(f"[{p}] {vals}")
+        sweep(args.source, p, vals, args.frames, passthrough, args.scale)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
