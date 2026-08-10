@@ -43,11 +43,13 @@ class VisionWorker:
         ckpt: str = "checkpoints/student.pt",
         want_matte: bool = False,
         matte_ema: float = 0.55,
+        depth_ema: float = 0.70,
     ) -> None:
         self.ckpt = ckpt
         self.kind = depth_kind
         self.want_matte = want_matte
         self.matte_ema = matte_ema
+        self.depth_ema = depth_ema
 
         self._models: dict[str, object] = {}
         self._seg = None
@@ -55,6 +57,7 @@ class VisionWorker:
         self._depth: np.ndarray | None = None
         self._matte: np.ndarray | None = None
         self._matte_smooth: np.ndarray | None = None
+        self._depth_smooth: np.ndarray | None = None
         self._seq = 0
         self._taken_depth = 0
         self._taken_matte = 0
@@ -138,13 +141,27 @@ class VisionWorker:
             if kind != "off":
                 t0 = time.perf_counter()
                 depth = self.norm(self._depth_model(kind).infer(frame))
+                # 深度マップそのものを時間方向に均す。
+                #
+                # DepthNormalizer が均しているのは min/max のレンジだけで、マップは素通り
+                # だった。これが効くのは値ではなく**勾配の向き**である点に注意する。
+                # 平坦な壁や机では深度の勾配がほぼ 0 になり、そこにノイズが乗ると
+                # 「ほぼ 0 のベクトルの向き」= ほぼ乱数が毎フレーム変わる。
+                # angle.frag はその向きを筆の向きに使うので、**平らな面の上で筆が
+                # 回り続ける**ことになる。値のブレは小さくても向きのブレは最大になる。
+                if self._depth_smooth is None or self._depth_smooth.shape != depth.shape:
+                    self._depth_smooth = depth
+                else:
+                    self._depth_smooth = (self.depth_ema * self._depth_smooth
+                                          + (1.0 - self.depth_ema) * depth)
+                depth = self._depth_smooth.astype(np.float32)
                 self.depth_s = time.perf_counter() - t0
             if want:
                 t0 = time.perf_counter()
                 m = self._segmenter().infer(frame)
                 self.matte_s = time.perf_counter() - t0
                 # マットが毎フレーム揺れると人物の輪郭で現実と絵が交互に入れ替わり、
-                # 縁がちらつく。深度と同じく時間方向に均す。
+                # 縁がちらつく。深度と同じ理由で時間方向に均す。
                 if self._matte_smooth is None or self._matte_smooth.shape != m.shape:
                     self._matte_smooth = m
                 else:

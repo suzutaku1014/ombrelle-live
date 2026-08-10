@@ -173,6 +173,8 @@ def main() -> None:
     ap.add_argument("--no-hud", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
+    ap.add_argument("--depth-ema", type=float, default=0.70,
+                    help="深度マップの時間平滑化。平らな面で筆の向きが回り続けるのを抑える")
     ap.add_argument("--cam-ema", type=float, default=0.70,
                     help="入力の時間平滑化。センサノイズで筆の色が明滅するのを抑える。"
                          "動いている間は自動で外れる。0で無効 (実行中は z)")
@@ -246,7 +248,8 @@ def main() -> None:
     if args.depth != "off" or args.compose or args.palette:
         from .vision import VisionWorker
         vision = VisionWorker(depth_kind=args.depth, ckpt=args.student_ckpt,
-                              want_matte=args.compose or args.palette).start()
+                              want_matte=args.compose or args.palette,
+                              depth_ema=args.depth_ema).start()
     # 入力(カメラ)と出力(描いた絵)を別々に測る。処理系が彩度比をどう動かしたかは
     # 片方だけ見ても分からない。出力側は FBO の読み戻しで GPU を止めるので低レート
     pal_in = PaletteMeter()
@@ -324,7 +327,9 @@ def main() -> None:
                     meter.add_stage("flow", time.perf_counter() - s)
                     renderer.update_flow(flowf.field)
                 if vision is not None:
-                    vision.submit(frame)
+                    # 推論にも均した方を渡す。深度の勾配の向きがノイズで暴れるのを
+                    # 元から減らせる (フローだけは生を見る。均すと動きが鈍るため)
+                    vision.submit(cam_smooth)
 
             if vision is not None:
                 # c キーで合成を始めたら、その場でマットも作らせる。
