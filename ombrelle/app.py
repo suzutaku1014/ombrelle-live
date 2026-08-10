@@ -59,7 +59,8 @@ class State:
         self.stabilize = bool(args.stabilize)
         if self.stabilize:
             self.palette = True
-        self.hud = not args.no_hud
+        # 0=消す 1=数値だけ 2=キー一覧も。既定は 1
+        self.hud = 0 if args.no_hud else 1
         self.quit = False
         self.shot = False
         self.probe = False
@@ -80,7 +81,7 @@ def make_key_callback(state: State):
         elif key == glfw.KEY_P:
             state.save = True
         elif key == glfw.KEY_H:
-            state.hud = not state.hud
+            state.hud = {1: 0, 0: 2, 2: 1}[int(state.hud)]   # 数値だけ → 消す → 全部
         elif key == glfw.KEY_LEFT_BRACKET:
             state.flow_gain = max(0.0, state.flow_gain - 0.5)
         elif key == glfw.KEY_RIGHT_BRACKET:

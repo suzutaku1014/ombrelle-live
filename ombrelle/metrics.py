@@ -56,18 +56,24 @@ class Meter:
 _VIEW_NAMES = {0: "paint", 1: "camera", 2: "depth", 3: "flow"}
 
 
+FONT, SCALE, THICK = cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1
+
+
 def build_hud(width: int, height: int, lines: list[str]) -> np.ndarray:
-    """左上に半透明の板と文字を描いた RGBA 画像を返す(OpenCV 座標系 = y 下向き)。"""
+    """左上に半透明の板と文字を描いた RGBA 画像を返す(OpenCV 座標系 = y 下向き)。
+
+    板の幅は**実際の文字幅から決める**。固定幅にしていたので、行が長くなると
+    文字だけが板からはみ出して絵の上に散らばっていた。
+    """
     hud = np.zeros((height, width, 4), dtype=np.uint8)
     pad, lh = 12, 20
     box_h = pad * 2 + lh * len(lines)
-    box_w = 320
+    box_w = pad * 2 + max((cv2.getTextSize(t, FONT, SCALE, THICK)[0][0] for t in lines), default=0)
+    box_w = min(box_w, width)
     cv2.rectangle(hud, (0, 0), (box_w, box_h), (12, 14, 20, 150), -1)
     for i, text in enumerate(lines):
-        cv2.putText(
-            hud, text, (pad, pad + lh * (i + 1) - 6),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.44, (235, 238, 245, 255), 1, cv2.LINE_AA,
-        )
+        cv2.putText(hud, text, (pad, pad + lh * (i + 1) - 6),
+                    FONT, SCALE, (235, 238, 245, 255), THICK, cv2.LINE_AA)
     return hud
 
 
@@ -110,8 +116,15 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str,
         f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  "
         f"split {state.split:4.2f}   space {'oklab' if getattr(state, 'oklab', 0.0) > 0.5 else 'luma '}",
         *palette,
-        "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod  w e wind",
-        "c compose  r u stand  0-3 view  s shot  p save  d depth  a palette  j oklab",
-        "4 5 orient-depth   6 7 depth-blur   z cam-ema   ; ' flow-dead",
-        "8 motion-probe   x stabilize   h hud   q quit",
+        # キー一覧は常時は出さない。板が画面の 1/3 を覆って絵の判断ができない。
+        # h で 数値のみ → 消す → 全部 と回す
+        *(KEY_HELP if int(getattr(state, "hud", 1)) >= 2 else []),
     ]
+
+
+KEY_HELP = [
+    "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod  w e wind",
+    "c compose  r u stand  0-3 view  s shot  p save  d depth  a palette  j oklab",
+    "4 5 orient-depth   6 7 depth-blur   z cam-ema   ; ' flow-dead",
+    "8 motion-probe   x stabilize   h hud   q quit",
+]
