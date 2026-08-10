@@ -697,62 +697,10 @@ vec3 scenePainterly(vec2 q, float t, float lod){
 
 // ---------------------------------------------------------------- 筆の向き
 // 向きは「方向」ではなく「軸」なので、角度を直接 mix すると ±π で破綻する。
-// 2倍角ベクトルで補間する(構造テンソルと同じ考え方)。
-float mixOrient(float a, float b, float w){
-  vec2 va = vec2(cos(2.0*a), sin(2.0*a));
-  vec2 vb = vec2(cos(2.0*b), sin(2.0*b));
-  vec2 v  = mix(va, vb, w);
-  if (dot(v, v) < 1e-8) return a;
-  return 0.5*atan(v.y, v.x);
-}
-
-// 動いている所は動きに沿った筆、止まっている所は等深線に沿った筆(形をなぞる)
-//
-// **重要**: 筆の格子は画素ごとに向きで回転する。向きの場が「筆1本の大きさ」より
-// 速く変化すると、同じ一筆に属するはずの画素が別々の格子を見て格子が破れる。
-// 大きい筆にしたら向きの場も同じ比率で滑らかにしなければならない。
-// 以下、空間周波数と深度の差分幅をすべて筆の大きさ bs で割っている。
-float strokeAngle(vec2 q, vec2 p, float t, float bs){
-  vec2 f = windF(q, t);
-  float flowA = atan(f.y, f.x);
-
-  // 深度の勾配も筆の大きさに合わせた幅で取る(細かい凹凸に反応させない)
-  float e = clamp(2.0*bs/uRes.y, 1.0/uRes.y, 0.05);
-
-  // 1点の勾配をそのまま使うと、深度が不連続な輪郭で向きが数画素の間に大きく振れ、
-  // 一筆の中で格子が破れて縁が毛羽立つ。**構造テンソル**で筆の footprint の中を
-  // 平均する。向きは軸なので、平均は 2 倍角ベクトルの和で取るのが正しい
-  // (勾配ベクトルをそのまま平均すると符号が反転して打ち消し合う)。
-  vec2 tensor = vec2(0.0);
-  float wsum = 0.0;
-  for (int i = 0; i < 5; i++){
-    vec2 o = (i == 0) ? vec2(0.0)
-           : vec2(cos(1.2566*float(i)), sin(1.2566*float(i))) * e * 1.6;
-    vec2 g = vec2(depthAt(q + o + vec2(e,0)) - depthAt(q + o - vec2(e,0)),
-                  depthAt(q + o + vec2(0,e)) - depthAt(q + o - vec2(0,e)));
-    float m = length(g);
-    if (m > 1e-6){
-      float a = atan(g.x, -g.y);                  // 等深線 = 勾配に直交する向き
-      tensor += vec2(cos(2.0*a), sin(2.0*a)) * m; // 大きい勾配ほど強く効く
-      wsum += m;
-    }
-  }
-  float contourA = (dot(tensor, tensor) > 1e-12) ? 0.5*atan(tensor.y, tensor.x) : 1.5708;
-  // 向きが揃っている(=テンソルの長さが重みの和に近い)ほど輪郭に従わせる。
-  // 輪郭が入り組んで向きが打ち消し合う場所では従わない
-  float coh = (wsum > 1e-6) ? length(tensor)/wsum : 0.0;
-  vec2 gd = vec2(wsum/5.0, 0.0);   // 以降の structW 用に平均勾配の大きさだけ渡す
-
-  // 平らな壁や机では勾配がほぼ 0 で、向きを決める根拠が無い。定数に倒すと
-  // 筆が一斉に揃って帯状に融合するので、ゆるい斜めの筋目を基本にして
-  // 低周波で振る。全周(2π)振ると渦模様になるので振れ幅は ±0.8 rad に留める。
-  float hatchA = 0.9 + (fbm2(p*1.1/bs + 11.0) - 0.5)*1.6;
-  float structW = smoothstep(0.004, 0.045, length(gd)/max(bs, 0.2)) * smoothstep(0.35, 0.85, coh);
-  float baseA = mixOrient(hatchA, contourA, structW);
-
-  float w = smoothstep(0.10, 0.75, length(f));
-  return mixOrient(baseA, flowA, w) + (fbm2(p*1.6/bs) - 0.5)*0.45;
-}
+// 注: ここにあった strokeAngle() は削除した。描画を 2 パス化したときに
+// 向きの計算は gl/shaders/angle.frag へ移したが、この関数が呼ばれないまま
+// 残っていた。**そして移植のときに一貫性ゲートと閾値が落ちていた。**
+// 実装が 2 つあると必ず片方が置き去りになる。向きは angle.frag にだけ置く。
 
 void main(){
   float asp = uRes.x / uRes.y;
