@@ -291,6 +291,7 @@ def main() -> None:
     probe = MotionProbe(frames=args.probe if args.probe > 0 else 90)
     probe_done = False
     rec: VideoRecorder | None = None
+    rec_raw: VideoRecorder | None = None
     rec_done = False
 
     def shot_meta() -> dict:
@@ -468,19 +469,34 @@ def main() -> None:
             if args.rec_seconds > 0.0 and ready and rec is None and not rec_done:
                 state.rec = True
             if state.rec and rec is None:
-                rec = VideoRecorder(Path("shots") / f"rec-{datetime.now():%Y%m%d-%H%M%S}.mp4",
+                stem = f"rec-{datetime.now():%Y%m%d-%H%M%S}"
+                rec = VideoRecorder(Path("shots") / f"{stem}.mp4",
                                     (renderer.render_w, renderer.render_h), args.rec_fps)
-                print(f"録画を開始しました → {rec.path}", flush=True)
+                # **カメラの入力も一緒に録る。** これが無いと、後から設定を変えて
+                # 同じ場面を描き直すことができない。絵だけ残しても
+                # 「この揺れはどの経路か」を切り分ける手段が無くなる
+                if frame is not None:
+                    rec_raw = VideoRecorder(Path("shots") / f"{stem}_raw.mp4",
+                                            (frame.shape[1], frame.shape[0]), args.rec_fps)
+                (Path("shots") / f"{stem}.json").write_text(
+                    json.dumps(shot_meta(), indent=2) + "\n", encoding="utf-8")
+                print(f"録画を開始しました → {rec.path} (+ 入力も)", flush=True)
             if rec is not None:
                 rec.add(renderer.read_scene(), t)
+                if rec_raw is not None and frame is not None:
+                    rec_raw.add(frame, t)
                 if args.rec_seconds > 0.0 and rec.started is not None \
                         and t - rec.started >= args.rec_seconds:
                     state.rec = False
                 if not state.rec:
                     info = rec.close(t)
-                    rec, rec_done = None, True
+                    if rec_raw is not None:
+                        info["raw"] = rec_raw.close(t)["path"]
+                    rec, rec_raw, rec_done = None, None, True
                     print(f"saved {info['path']}  {info['frames']} フレーム / "
-                          f"{info['seconds']}秒 ({info['fps']} fps)", flush=True)
+                          f"{info['seconds']}秒 ({info['fps']} fps)"
+                          + (f"\n      + {info['raw']} (入力。これで設定を変えて描き直せる)"
+                             if "raw" in info else ""), flush=True)
                     if args.rec_seconds > 0.0:
                         break
 
