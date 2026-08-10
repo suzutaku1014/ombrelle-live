@@ -256,6 +256,31 @@ const float CMAX_K = 2.2;     // 基準に対する絵具の上限。compand と
 // 暖色軸と肌の色相。同じ色を両平面で測った値
 const float WARM_L = -0.66, WARM_OK = 0.68;
 const float SKIN_L = -0.78, SKIN_OK = 0.85;
+// 「黒は使わない」の下限。vec3(0.08,0.09,0.11) を Oklab の明度で表したもの
+const float FLOOR_L = 0.204;
+
+// 表示できる範囲へ戻す。成分ごとの clamp は**色相と明度まで動かす**ので、
+// グラデーションに帯や平坦部が出る。L と h を保ったまま C だけ落として色域へ入れる。
+// C=0 (無彩色) は必ず色域内なので、0 と元の彩度の間を二分探索すれば必ず収まる。
+bool inGamut(vec3 c){
+  return all(greaterThanEqual(c, vec3(-1e-4))) && all(lessThanEqual(c, vec3(1.0001)));
+}
+vec3 gamutMap(vec3 c){
+  vec3 lab = rgbToOklab(c);
+  // 黒は使わない。ただし成分ごとの max と違い、明度だけを持ち上げて色相は動かさない
+  // (暗い高彩度の赤に青成分が足されて濁る、ということが起きない)。
+  // これは色域内の画素にも掛ける。色域外かどうかで先に分岐すると、
+  // 暗くて色域内の画素だけ下限が素通りする
+  lab.x = clamp(lab.x, FLOOR_L, 1.0);
+  vec3 lifted = oklabToRgb(lab);
+  if (inGamut(lifted)) return clamp(lifted, 0.0, 1.0);
+  float lo = 0.0, hi = 1.0;
+  for (int i = 0; i < 5; i++){
+    float m = 0.5*(lo + hi);
+    if (inGamut(oklabToRgb(vec3(lab.x, lab.yz*m)))) lo = m; else hi = m;
+  }
+  return clamp(oklabToRgb(vec3(lab.x, lab.yz*lo)), 0.0, 1.0);
+}
 
 float cref(){ return uOklab > 0.5 ? CREF_L/OK_C : CREF_L; }
 float cmax(){ return cref() * CMAX_K; }
@@ -933,7 +958,13 @@ void main(){
 
   // 粒子感・黒禁止
   col += (hash21(gl_FragCoord.xy*0.7 + mod(t, 10.0)) - 0.5)*0.012;
-  col = max(col, vec3(0.08, 0.09, 0.11));
+  if (uOklab > 0.5){
+    // 出力先は RGB8 なので、ここで丸めなければ書き込みで成分ごとに切られる。
+    // 切られると色相と明度が動く (§4.5) ので、彩度だけ落として色域へ入れる
+    col = gamutMap(col);
+  } else {
+    col = max(col, vec3(0.08, 0.09, 0.11));
+  }
 
   fragColor = vec4(col, 1.0);
 }

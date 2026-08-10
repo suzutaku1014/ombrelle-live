@@ -31,11 +31,15 @@ TOL = 1e-4       # float32 の往復として妥当な範囲
 
 
 def _extract_functions() -> str:
-    """uniform を参照しない色空間の関数群だけを brush.frag から取り出す。"""
+    """uniform を参照しない部分だけを brush.frag から取り出す。
+
+    変換関数 (cbrt_s 〜 oklabToRgb) と、その後ろの定数 + gamutMap。
+    間に挟まる toPlane/fromPlane と、cref() 以降は uOklab を見るので外す。
+    """
     src = Path("ombrelle/gl/shaders/brush.frag").read_text(encoding="utf-8")
-    a = src.index("float cbrt_s")
-    b = src.index("// RGB ⇄ 平面")     # ここから先は uOklab を見るので切り離す
-    return src[a:b]
+    conv = src[src.index("float cbrt_s"):src.index("// RGB ⇄ 平面")]
+    gamut = src[src.index("const float OK_C"):src.index("float cref()")]
+    return conv + gamut
 
 
 def main() -> int:
@@ -49,16 +53,18 @@ def main() -> int:
             "#version 330\nuniform sampler2D uSrc;\nuniform float uInv;\nout vec4 o;\n"
             + _extract_functions()
             + "void main(){ vec3 c = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0).rgb;"
-              "  o = vec4(uInv > 0.5 ? oklabToRgb(c) : rgbToOklab(c), 1.0); }"
+              "  o = vec4(uInv > 1.5 ? gamutMap(c)"
+              "         : uInv > 0.5 ? oklabToRgb(c) : rgbToOklab(c), 1.0); }"
         ),
     )
 
-    def run(data: np.ndarray, inverse: bool) -> np.ndarray:
+    def run(data: np.ndarray, mode: float) -> np.ndarray:
+        """mode 0=rgbToOklab / 1=oklabToRgb / 2=gamutMap"""
         h = len(data)
         tex = ctx.texture((1, h), 3, data=np.ascontiguousarray(data.reshape(h, 1, 3)), dtype="f4")
         tex.use(0)
         prog["uSrc"] = 0
-        prog["uInv"] = 1.0 if inverse else 0.0
+        prog["uInv"] = mode
         out = ctx.texture((1, h), 4, dtype="f4")
         fbo = ctx.framebuffer(color_attachments=[out])
         fbo.use()
@@ -75,17 +81,35 @@ def main() -> int:
     ]).astype(np.float32)
 
     checks = [
-        ("rgbToOklab", np.abs(run(rgb, False) - srgb_to_oklab(rgb)).max()),
+        ("rgbToOklab", np.abs(run(rgb, 0.0) - srgb_to_oklab(rgb)).max()),
     ]
     lab = srgb_to_oklab(rgb).astype(np.float32)
-    checks.append(("oklabToRgb", np.abs(run(lab, True) - oklab_to_srgb(lab)).max()))
-    checks.append(("GLSL 往復", np.abs(run(lab, True) - rgb).max()))
+    checks.append(("oklabToRgb", np.abs(run(lab, 1.0) - oklab_to_srgb(lab)).max()))
+    checks.append(("GLSL 往復", np.abs(run(lab, 1.0) - rgb).max()))
+
+    # ---- 色域マッピング ----
+    # 「L と h を保って C だけ落とす」が守られているか。成分ごとの clamp なら
+    # ここで色相がずれるので、この 3 つが同時に通れば naive clip ではないと言える
+    out = run(rgb, 2.0)
+    lab_i, lab_o = srgb_to_oklab(rgb), srgb_to_oklab(out)
+    floor_l = float(_extract_functions().split("FLOOR_L = ")[1].split(";")[0])
+    checks.append(("色域内に収まる", max(0.0, float(np.max(np.abs(out - np.clip(out, 0.0, 1.0)))))))
+    checks.append(("明度 L の保存", float(np.abs(
+        lab_o[:, 0] - np.clip(lab_i[:, 0], floor_l, 1.0)).max())))
+    # 色相は彩度がある画素だけ見る。無彩色に色相は無く、色域外が極端で
+    # C をほぼ 0 まで落とした画素は出力側の色相が数値ノイズになる
+    Ci = np.hypot(lab_i[:, 1], lab_i[:, 2])
+    Co = np.hypot(lab_o[:, 1], lab_o[:, 2])
+    sel = (Ci > 0.02) & (Co > 0.02)
+    hi_, ho_ = np.arctan2(lab_i[sel, 2], lab_i[sel, 1]), np.arctan2(lab_o[sel, 2], lab_o[sel, 1])
+    dh = np.abs(hi_ - ho_) % (2 * np.pi)
+    checks.append(("色相 h の保存", float(np.minimum(dh, 2 * np.pi - dh).max())))
 
     ok = True
     for name, err in checks:
         mark = "OK " if err < TOL else "NG "
         ok &= err < TOL
-        print(f"{mark}{name:<12} 最大誤差 {err:.2e}  (許容 {TOL:.0e})")
+        print(f"{mark}{name:<14} 最大誤差 {err:.2e}  (許容 {TOL:.0e})")
     return 0 if ok else 1
 
 
