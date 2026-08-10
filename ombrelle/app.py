@@ -41,6 +41,7 @@ class State:
         self.split = args.split
         self.inject = args.inject
         self.memory = args.memory
+        self.idle_wind = args.idle_wind
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
         # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
@@ -110,6 +111,10 @@ def make_key_callback(state: State):
             state.memory = max(0.0, state.memory - 0.05)
         elif key == glfw.KEY_O:
             state.memory = min(1.0, state.memory + 0.05)
+        elif key == glfw.KEY_W:
+            state.idle_wind = max(0.0, state.idle_wind - 0.1)
+        elif key == glfw.KEY_E:
+            state.idle_wind = min(1.0, state.idle_wind + 0.1)
         elif key == glfw.KEY_C:
             state.compose = 0.0 if state.compose > 0.5 else 1.0
         elif key == glfw.KEY_R:
@@ -169,6 +174,8 @@ def main() -> None:
                     help="中性面への色の注入量。白い壁を暖色と寒色で描くための量")
     ap.add_argument("--memory", type=float, default=0.90,
                     help="記憶色(肌)の保護。肌の近くの色相だけ振れ幅を抑える。0で保護なし")
+    ap.add_argument("--idle-wind", type=float, default=0.0,
+                    help="静止時の微風。0=誰も動かなければ筆も止まる 1=従来 (実行中は w e)")
     ap.add_argument("--compose", action="store_true",
                     help="人物をモネ風の風景の中へ合成する (実行中は c キー)")
     ap.add_argument("--palette", action="store_true",
@@ -350,6 +357,7 @@ def main() -> None:
                 "uSplit": state.split,
                 "uInject": state.inject,
                 "uMemory": state.memory,
+                "uIdleWind": state.idle_wind,
                 "uOklab": state.oklab,
                 "uSubjChroma": stab.subj_chroma,
                 "uSplitScale": stab.split_scale,

@@ -24,6 +24,7 @@ uniform float uHasFlow;
 uniform float uFlowGain;
 uniform vec2  uWind;
 uniform float uEnergy;
+uniform float uIdleWind;   // 静止時の微風。0=誰も動かなければ筆も止まる / 1=従来
 
 float hash21(vec2 p){
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -64,7 +65,8 @@ vec2 windDirBase(vec2 q){
 vec2 windF(vec2 q, float t){
   float turb = 0.7 + 0.3*fbm2(q*6.0 - vec2(uAdv*1.3, uAdv*0.16));
   vec2 f = flowAt(q) * turb;
-  float g = gustEnv(t) * 0.06 * (1.0 - smoothstep(0.010, 0.10, uEnergy));
+  // brush.frag の同名関数と必ず同じ式にすること (向きの場と絵で別々に動くと破綻する)
+  float g = gustEnv(t) * 0.06 * uIdleWind * (1.0 - smoothstep(0.010, 0.10, uEnergy));
   return f + windDirBase(q) * g * turb;
 }
 

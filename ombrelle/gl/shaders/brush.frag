@@ -46,6 +46,7 @@ uniform float uMemory;     // 記憶色(肌)の保護。肌の近くだけ色相
 uniform float uOklab;      // 0=luma の対立色平面 / 1=Oklab。色の操作だけを差し替える A/B
 uniform float uSubjChroma; // 人物領域の彩度倍率。実測した R_C を目標帯へ寄せる (1.0 で無効)
 uniform float uSplitScale; // 分離角の全体倍率。背景が無彩色で比が跳ねたとき絞る (1.0 で無効)
+uniform float uIdleWind;   // 静止時の微風。0=誰も動かなければ筆も止まる / 1=従来
 uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
 uniform float uHasMatte;
 uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
@@ -145,8 +146,11 @@ vec2 windDirBase(vec2 q){
 vec2 windF(vec2 q, float t){
   float turb = 0.7 + 0.3*fbm2(q*6.0 - vec2(uAdv*1.3, uAdv*0.16));
   vec2 f = flowAt(q) * turb;
-  // 動きが無いときも絵が完全に死なないよう、呼吸だけの微風を残す(主役ではない)
-  float g = gustEnv(t) * 0.06 * (1.0 - smoothstep(0.010, 0.10, uEnergy));
+  // 静止時の微風。「動きが無くても絵が死なない」ようにと入れていたが、
+  // **実カメラで初めて過剰さが出た**。合成入力ではフローが厳密に 0 なので、
+  // この項だけが動いていることに気づけなかった。既定 0 (誰も動かなければ止まる)。
+  // uIdleWind = 1.0 で従来の挙動に戻る
+  float g = gustEnv(t) * 0.06 * uIdleWind * (1.0 - smoothstep(0.010, 0.10, uEnergy));
   return f + windDirBase(q) * g * turb;
 }
 
