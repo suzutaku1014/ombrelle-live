@@ -25,6 +25,44 @@ import cv2
 import numpy as np
 
 
+class VideoRecorder:
+    """描いた結果をそのまま動画に落とす。
+
+    画面収録との違いは 3 つ。ウィンドウの枠も HUD も入らない (FBO を読むため)、
+    内部解像度そのままで記録される、そして**再生速度が実時間と一致する**。
+
+    最後の点が地味に効く。記録中は読み戻しと符号化で fps が落ちるので、
+    描画のフレームをそのまま並べると早回しになる。目標 fps に足りる分だけ
+    間引いて書く。
+    """
+
+    def __init__(self, path: str | Path, size: tuple[int, int], fps: float = 30.0) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fps = fps
+        self._w = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+        if not self._w.isOpened():
+            raise RuntimeError(f"動画を開けませんでした: {self.path}")
+        self._next = 0.0
+        self.frames = 0
+        self.started: float | None = None
+
+    def add(self, rgb: np.ndarray, t: float) -> None:
+        if self.started is None:
+            self.started, self._next = t, t
+        if t + 1e-6 < self._next:
+            return
+        self._next += 1.0 / self.fps
+        self._w.write(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        self.frames += 1
+
+    def close(self, t: float) -> dict:
+        self._w.release()
+        dur = max(t - (self.started or t), 1e-6)
+        return {"path": str(self.path), "frames": self.frames,
+                "seconds": round(dur, 2), "fps": round(self.frames / dur, 1)}
+
+
 class MotionProbe:
     """連続フレームを読み戻して時間方向の変化を積算する。
 

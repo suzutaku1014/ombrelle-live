@@ -26,7 +26,7 @@ from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
 from .palette import PaletteMeter, Stabilizer
-from .record import MotionProbe
+from .record import MotionProbe, VideoRecorder
 from .source import open_source
 
 
@@ -64,6 +64,7 @@ class State:
         self.quit = False
         self.shot = False
         self.probe = False
+        self.rec = False
         self.save = False
         self.depth_kind = args.depth  # "teacher" | "student" | "off"
 
@@ -120,6 +121,8 @@ def make_key_callback(state: State):
             state.memory = min(1.0, state.memory + 0.05)
         elif key == glfw.KEY_8:
             state.probe = True
+        elif key == glfw.KEY_9:
+            state.rec = not state.rec
         elif key == glfw.KEY_4:
             state.orient_depth = max(0.0, state.orient_depth - 0.1)
         elif key == glfw.KEY_5:
@@ -234,6 +237,9 @@ def main() -> None:
                     help="描画の上限 fps。0 で無制限")
     ap.add_argument("--frames", type=int, default=0, help=">0 なら N フレームで終了(検証用)")
     ap.add_argument("--shot", default="", help="終了直前にこのパスへ保存(検証用)")
+    ap.add_argument("--rec-seconds", type=float, default=0.0,
+                    help=">0 なら準備完了後に自動で録画して終了する (実行中は 9 キー)")
+    ap.add_argument("--rec-fps", type=float, default=30.0, help="録画する fps")
     ap.add_argument("--probe", type=int, default=0, metavar="N",
                     help=">0 なら準備完了後に N フレーム連続で読み戻し、"
                          "どこがどれだけ動いているかの地図を出して終了 (実行中は 8 キー)")
@@ -284,6 +290,8 @@ def main() -> None:
     stab = Stabilizer()
     probe = MotionProbe(frames=args.probe if args.probe > 0 else 90)
     probe_done = False
+    rec: VideoRecorder | None = None
+    rec_done = False
 
     def shot_meta() -> dict:
         """スクショの脇に置く記録。設定値と実測値を必ず 1 枚と対にする。
@@ -456,6 +464,26 @@ def main() -> None:
                 state.probe = False
                 probe.start()
                 print(f"動きの計測を開始しました ({probe.frames} フレーム)", flush=True)
+            # 録画。9 キー、または --rec-seconds で自動
+            if args.rec_seconds > 0.0 and ready and rec is None and not rec_done:
+                state.rec = True
+            if state.rec and rec is None:
+                rec = VideoRecorder(Path("shots") / f"rec-{datetime.now():%Y%m%d-%H%M%S}.mp4",
+                                    (renderer.render_w, renderer.render_h), args.rec_fps)
+                print(f"録画を開始しました → {rec.path}", flush=True)
+            if rec is not None:
+                rec.add(renderer.read_scene(), t)
+                if args.rec_seconds > 0.0 and rec.started is not None \
+                        and t - rec.started >= args.rec_seconds:
+                    state.rec = False
+                if not state.rec:
+                    info = rec.close(t)
+                    rec, rec_done = None, True
+                    print(f"saved {info['path']}  {info['frames']} フレーム / "
+                          f"{info['seconds']}秒 ({info['fps']} fps)", flush=True)
+                    if args.rec_seconds > 0.0:
+                        break
+
             if probe.active and probe.add(renderer.read_scene()):
                 probe_done = True
                 stem = f"probe-{datetime.now():%Y%m%d-%H%M%S}"

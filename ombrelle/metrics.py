@@ -104,7 +104,8 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str,
         palette = ["palette  off   (a=measure  x=auto)"]
     return [
         f"view {int(state.view)}:{_VIEW_NAMES.get(int(state.view), '?')}   "
-        f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms",
+        f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms"
+        f"{'   [REC]' if getattr(state, 'rec', False) else ''}",
         f"depth {depth_source:<8} {meter.ms('depth'):5.1f}ms   "
         f"seg {meter.ms('seg'):4.1f}ms   flow {meter.ms('flow'):4.1f}ms",
         f"compose {'ON  stand ' + format(state.stand, '4.2f') if state.compose > 0.5 else 'OFF'}",
@@ -126,5 +127,5 @@ KEY_HELP = [
     "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod  w e wind",
     "c compose  r u stand  0-3 view  s shot  p save  d depth  a palette  j oklab",
     "4 5 orient-depth   6 7 depth-blur   z cam-ema   ; ' flow-dead",
-    "8 motion-probe   x stabilize   h hud   q quit",
+    "8 motion-probe   9 rec   x stabilize   h hud   q quit",
 ]
