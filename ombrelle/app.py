@@ -240,6 +240,9 @@ def main() -> None:
     ap.add_argument("--rec-seconds", type=float, default=0.0,
                     help=">0 なら準備完了後に自動で録画して終了する (実行中は 9 キー)")
     ap.add_argument("--rec-fps", type=float, default=30.0, help="録画する fps")
+    ap.add_argument("--rec-path", default="",
+                    help="録画の出力先を明示する。一括実行では必ずこれを使うこと "
+                         "(既定は shots/rec-<時刻>.mp4 で、後から名前を推測することになる)")
     ap.add_argument("--probe", type=int, default=0, metavar="N",
                     help=">0 なら準備完了後に N フレーム連続で読み戻し、"
                          "どこがどれだけ動いているかの地図を出して終了 (実行中は 8 キー)")
@@ -469,16 +472,17 @@ def main() -> None:
             if args.rec_seconds > 0.0 and ready and rec is None and not rec_done:
                 state.rec = True
             if state.rec and rec is None:
-                stem = f"rec-{datetime.now():%Y%m%d-%H%M%S}"
-                rec = VideoRecorder(Path("shots") / f"{stem}.mp4",
-                                    (renderer.render_w, renderer.render_h), args.rec_fps)
+                out = Path(args.rec_path) if args.rec_path else \
+                    Path("shots") / f"rec-{datetime.now():%Y%m%d-%H%M%S}.mp4"
+                stem = str(out.with_suffix(""))
+                rec = VideoRecorder(out, (renderer.render_w, renderer.render_h), args.rec_fps)
                 # **カメラの入力も一緒に録る。** これが無いと、後から設定を変えて
                 # 同じ場面を描き直すことができない。絵だけ残しても
                 # 「この揺れはどの経路か」を切り分ける手段が無くなる
                 if frame is not None:
-                    rec_raw = VideoRecorder(Path("shots") / f"{stem}_raw.mp4",
+                    rec_raw = VideoRecorder(Path(f"{stem}_raw.mp4"),
                                             (frame.shape[1], frame.shape[0]), args.rec_fps)
-                (Path("shots") / f"{stem}.json").write_text(
+                Path(f"{stem}.json").write_text(
                     json.dumps(shot_meta(), indent=2) + "\n", encoding="utf-8")
                 print(f"録画を開始しました → {rec.path} (+ 入力も)", flush=True)
             if rec is not None:
