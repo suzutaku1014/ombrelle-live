@@ -43,6 +43,7 @@ uniform float uSplit;      // 色彩分割の強さ(隣り合う筆を暖色側/
 uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。これで割ってから絵の色を決める
 uniform float uInject;     // 中性面への色の注入量。分割は平均を保存するので彩度は増えない
 uniform float uMemory;     // 記憶色(肌)の保護。肌の近くだけ色相の振れ幅を抑える
+uniform float uOklab;      // 0=luma の対立色平面 / 1=Oklab。色の操作だけを差し替える A/B
 uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
 uniform float uHasMatte;
 uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
@@ -189,6 +190,77 @@ vec3 aerial(vec3 c, float d, vec2 q){
   return c;
 }
 
+// ---------------------------------------------------------------- 色空間
+// 色の操作 (注入 / 圧縮 / 分割 / 天井) は、すべて「明度 1 軸 + 色度 2 軸」という
+// 1 つの表現の上で行う。どの平面を使うかだけを uOklab で差し替えられるようにして、
+// 意匠のパラメータを一切変えずに色空間だけを A/B できるようにする。
+//
+//   uOklab = 0 … luma を抜いた対立色平面 (R-Y, B-Y)。原典から使ってきた方式。
+//                ガンマ符号化 RGB 上の量なので、色度ベクトルの長さは知覚的な
+//                彩度に比例しない (青は同じ長さでも鈍く見える)
+//   uOklab = 1 … Oklab (L, a, b)。知覚的にほぼ等間隔で、領域間の比較に耐える
+//
+// 係数は Björn Ottosson (2020) の原典どおり。**ombrelle/oklab.py と同じ値であること。**
+// 片方だけ書き換えると、測った数値と描いた絵が別の空間の話になる。
+
+float cbrt_s(float x){ return sign(x) * pow(abs(x), 1.0/3.0); }   // 色域外で負になっても壊さない
+
+vec3 srgbToLinear(vec3 c){
+  vec3 a = abs(c);
+  return sign(c) * mix(pow((a + 0.055)/1.055, vec3(2.4)), a/12.92, step(a, vec3(0.04045)));
+}
+vec3 linearToSrgb(vec3 c){
+  vec3 a = abs(c);
+  return sign(c) * mix(1.055*pow(a, vec3(1.0/2.4)) - 0.055, a*12.92, step(a, vec3(0.0031308)));
+}
+vec3 rgbToOklab(vec3 c){
+  vec3 lin = srgbToLinear(c);
+  vec3 v = vec3(cbrt_s(dot(lin, vec3(0.4122214708, 0.5363325363, 0.0514459929))),
+                cbrt_s(dot(lin, vec3(0.2119034982, 0.6806995451, 0.1073969566))),
+                cbrt_s(dot(lin, vec3(0.0883024619, 0.2817188376, 0.6299787005))));
+  return vec3(dot(v, vec3(0.2104542553,  0.7936177850, -0.0040720468)),
+              dot(v, vec3(1.9779984951, -2.4285922050,  0.4505937099)),
+              dot(v, vec3(0.0259040371,  0.7827717662, -0.8086757660)));
+}
+vec3 oklabToRgb(vec3 lab){
+  vec3 v = vec3(lab.x + 0.3963377774*lab.y + 0.2158037573*lab.z,
+                lab.x - 0.1055613458*lab.y - 0.0638541728*lab.z,
+                lab.x - 0.0894841775*lab.y - 1.2914855480*lab.z);
+  v = v*v*v;
+  return linearToSrgb(vec3(dot(v, vec3( 4.0767416621, -3.3077115913,  0.2309699292)),
+                           dot(v, vec3(-1.2684380046,  2.6097574011, -0.3413193965)),
+                           dot(v, vec3(-0.0041960863, -0.7034186147,  1.7076147010))));
+}
+
+// RGB ⇄ 平面。**x が明度、yz が色度ベクトル**という約束を両者で揃える。
+// これで下の 4 つの操作は空間を知らずに書ける
+vec3 toPlane(vec3 c){
+  if (uOklab > 0.5) return rgbToOklab(c);
+  float Y = dot(c, LW);
+  return vec3(Y, c.r - Y, c.b - Y);
+}
+vec3 fromPlane(vec3 p){
+  if (uOklab > 0.5) return oklabToRgb(p);
+  float R = p.x + p.y, B = p.x + p.z;
+  return vec3(R, (p.x - LW.r*R - LW.b*B)/LW.g, B);   // 明度は定義から保存される
+}
+
+// 彩度と角度の定数だけは平面ごとに別に持つ。対立色平面の彩度は Oklab の
+// およそ 2.98 倍 (赤/緑/青/肌/木で測った比の平均)。色相の詰まり方も違い、
+// 肌の近傍では Oklab 側が約 1.44 倍に開く。どちらも実測から出した換算であって
+// 厳密な変換ではない。A/B の出発点として置き、絵を見て詰める。
+const float OK_C   = 2.98;
+const float OK_H   = 1.44;
+const float CREF_L = 0.18;    // 対立色平面でのパレット基準彩度
+const float CMAX_K = 2.2;     // 基準に対する絵具の上限。compand と ceilChroma で共有する
+// 暖色軸と肌の色相。同じ色を両平面で測った値
+const float WARM_L = -0.66, WARM_OK = 0.68;
+const float SKIN_L = -0.78, SKIN_OK = 0.85;
+
+float cref(){ return uOklab > 0.5 ? CREF_L/OK_C : CREF_L; }
+float cmax(){ return cref() * CMAX_K; }
+float darkCut(){ return uOklab > 0.5 ? 0.528 : 0.42; }   // 「暗部」の境目 (sRGB 0.42 相当)
+
 // ---------------------------------------------------------------- 色彩分割
 // 原典のコメントにある設計意図:
 //   「色彩分割: 草は三族に量子化(青緑/緑/黄——**緑を成分に分解**)」
@@ -197,18 +269,13 @@ vec3 aerial(vec3 c, float d, vec2 q){
 // 要点は **平均すると元の色に戻る**ことで、そのために各筆は元より彩度が高くなる。
 // これが「絵具を混ぜるより明るく見える」理由 (混色は彩度を落とすが、並置は落とさない)。
 //
-// 対立色平面 (輝度を抜いた 2 次元) で色度ベクトルを ±Δ 回すと、2 つの平均は
+// 色度平面 (明度を抜いた 2 次元) で色度ベクトルを ±Δ 回すと、2 つの平均は
 // cos(Δ) 倍に縮む。だから各筆を 1/cos(Δ) 倍に伸ばしておけば平均が厳密に元へ戻る。
 // 色相を固定角で回す原典の方式と違い、これは元の色相が何であっても成立する。
-vec3 divide(vec3 c, float ang, float sat){
-  float Y = dot(c, LW);
-  vec2 v = vec2(c.r - Y, c.b - Y);                 // 対立色平面の色度ベクトル
+// 回転は平面が何であっても同じ式で、明度 (p.x) には一切触れない。
+vec3 divide(vec3 p, float ang, float sat){
   float ca = cos(ang), sa = sin(ang);
-  v = vec2(ca*v.x - sa*v.y, sa*v.x + ca*v.y) * sat;
-  float R = Y + v.x;
-  float B = Y + v.y;
-  float G = (Y - LW.r*R - LW.b*B) / LW.g;          // 輝度は定義から保存される
-  return vec3(R, G, B);
+  return vec3(p.x, (ca*p.y - sa*p.z)*sat, (sa*p.y + ca*p.z)*sat);
 }
 
 // パレットの圧縮。
@@ -221,30 +288,23 @@ vec3 divide(vec3 c, float ang, float sat){
 // さらに、色彩分割の平均保存のための彩度補正 (1/shrink) は**平均**しか保証せず、
 // 個々の筆の彩度に上限が無い。元が高彩度の肌に掛かるとネオンになる。
 // 上限はここで一度だけ与える。
-vec3 compand(vec3 c, float level, float d){
-  float Y = dot(c, LW);
-  vec2 v = vec2(c.r - Y, c.b - Y);
-  float C = length(v);
-  if (C < 1e-5) return c;
-  const float CREF = 0.18;                       // パレットの基準彩度
-  const float G    = 0.60;                       // <1 で圧縮 (低彩度を持ち上げ高彩度を抑える)
-  float Cn = CREF * pow(C/CREF, G) * level * (0.92 + 0.20*d);
-  Cn = min(Cn, CREF*2.2);                        // 絵具の上限
-  v *= Cn / C;
-  float R = Y + v.x, B = Y + v.y;
-  return vec3(R, (Y - LW.r*R - LW.b*B)/LW.g, B);
+vec3 compand(vec3 p, float level, float d){
+  float C = length(p.yz);
+  float cr = cref();
+  if (C < 1e-6*cr) return p;
+  const float G = 0.60;                          // <1 で圧縮 (低彩度を持ち上げ高彩度を抑える)
+  float Cn = cr * pow(C/cr, G) * level * (0.92 + 0.20*d);
+  Cn = min(Cn, cr*CMAX_K);                       // 絵具の上限。天井は ceilChroma と共有
+  return vec3(p.x, p.yz * (Cn/C));
 }
 
 // 絵具の上限。色彩分割の彩度補正はあくまで**平均**を保証する式なので、
 // 個々の筆が上限を超えうる。分割の後にもう一度だけ天井を当てる。
-vec3 ceilChroma(vec3 c, float cmax){
-  float Y = dot(c, LW);
-  vec2 v = vec2(c.r - Y, c.b - Y);
-  float C = length(v);
-  if (C <= cmax || C < 1e-5) return c;
-  v *= cmax / C;
-  float R = Y + v.x, B = Y + v.y;
-  return vec3(R, (Y - LW.r*R - LW.b*B)/LW.g, B);
+vec3 ceilChroma(vec3 p){
+  float C = length(p.yz);
+  float cm = cmax();
+  if (C <= cm || C < 1e-6) return p;
+  return vec3(p.x, p.yz * (cm/C));
 }
 
 // 中性面への色の注入。
@@ -255,20 +315,18 @@ vec3 ceilChroma(vec3 c, float cmax){
 //   明るい面 → 暖色側、暗い面 → 寒色側
 // 注入量は元の彩度が低いほど大きく、中間調で最大にする
 // (実際の絵具も最高彩度は中間調にあり、白飛びと黒潰れでは彩度が落ちる)。
-vec3 inject(vec3 c, float amt, float jit){
-  float Y = dot(c, LW);
-  vec2 v = vec2(c.r - Y, c.b - Y);
-  float bias = clamp((Y - 0.45)*2.0, -1.0, 1.0);        // 明るいほど暖色へ
-  float mid  = clamp(4.0*Y*(1.0 - Y), 0.0, 1.0);        // 中間調で最大
+vec3 inject(vec3 p, float amt, float jit){
+  // 明度の目盛りは平面ごとに違う。sRGB の中間調は luma で 0.45、Oklab では 0.55
+  float pivot = uOklab > 0.5 ? 0.55 : 0.45;
+  float cs = uOklab > 0.5 ? 1.0/OK_C : 1.0;             // 彩度の目盛り
+  float hs = uOklab > 0.5 ? OK_H : 1.0;                 // 角度の目盛り
+  float bias = clamp((p.x - pivot)*2.0, -1.0, 1.0);     // 明るいほど暖色へ
+  float mid  = clamp(4.0*p.x*(1.0 - p.x), 0.0, 1.0);    // 中間調で最大
   // 元が有彩色でも温度差は残す。0 にすると顔や木で明暗の色分けが消える
-  float lack = 0.25 + 0.75*(1.0 - smoothstep(0.02, 0.16, length(v)));
+  float lack = 0.25 + 0.75*(1.0 - smoothstep(0.02*cs, 0.16*cs, length(p.yz)));
   // 注入の軸を筆ごとに散らす。単一の軸だと中性面が同じ 2 色の繰り返しになる
-  float a0 = -0.66 + jit*0.45;                          // 暖色方向のまわり ±0.45rad
-  vec2 axis = vec2(cos(a0), sin(a0));
-  v += axis * bias * amt * mid * lack;
-  float R = Y + v.x, B = Y + v.y;
-  float G = (Y - LW.r*R - LW.b*B) / LW.g;
-  return vec3(R, G, B);
+  float a0 = (uOklab > 0.5 ? WARM_OK : WARM_L) + jit*0.45*hs;   // 暖色方向のまわり ±0.45rad
+  return vec3(p.x, p.yz + vec2(cos(a0), sin(a0)) * (bias * amt*cs * mid * lack));
 }
 
 
@@ -772,9 +830,14 @@ void main(){
     col = scenePainterly(qc, t, lod);
 
     float d = depthComposite(qc);
-    float l0 = dot(col, LW);
     float h1r = hash21(bestId + 3.1);
     float h2r = hash21(bestId + 17.9);
+
+    // ここから色の操作は一貫して色度平面の上で行い、RGB へ戻すのは最後の一度だけ。
+    // 以前は 4 つの操作がそれぞれ独自に明度と色度へ分解して RGB へ組み直していた。
+    // 同じ分解を 4 回やる意味は無く、色空間を差し替える余地も無かった
+    vec3 pl = toPlane(col);
+    float l0 = pl.x;
 
     // ---- 色彩分割 ----
     // 役割を 2 段に分ける:
@@ -782,7 +845,7 @@ void main(){
     //   divide() … 色彩分割そのもの。**平均は厳密に保存する**
     // 以前は divide 側で輝度による暖寒の偏りも付けていたが、それをやると平均が
     // 保存されず「色彩分割」の定義から外れる。担当を分けた。
-    if (uInject > 1e-3) col = inject(col, uInject, h2r*2.0 - 1.0);
+    if (uInject > 1e-3) pl = inject(pl, uInject, h2r*2.0 - 1.0);
 
     // ---- 順序が効く ----
     // 「分割してから圧縮」だと、高彩度の肌の上で色相を大きく振ってから抑えることになり、
@@ -791,7 +854,7 @@ void main(){
     //   compand … パレットの水準と圧縮を決める (ここで画面全体の彩度がほぼ揃う)
     //   divide  … その水準のまま色相だけ散らす
     //   ceil    … 分割の彩度補正が天井を超えた分だけ戻す
-    col = compand(col, uChroma * (0.92 + 0.24*(h2r - 0.5)), d);
+    pl = compand(pl, uChroma * (0.92 + 0.24*(h2r - 0.5)), d);
 
     float dlt = uSplit * (0.30 + 0.70*d) * 1.90 / max(bs, 0.4);
     dlt = min(dlt, 1.90);
@@ -804,13 +867,12 @@ void main(){
     // 対立色平面での角度を測ると、肌は -0.77rad、木 -0.87rad に対し、
     // 草 -2.11rad / 空 +2.04rad と十分離れている。肌の周りだけ狙って抑えられる。
     if (uMemory > 0.001){
-      float Yc = dot(col, LW);
-      vec2 vc = vec2(col.r - Yc, col.b - Yc);
-      if (dot(vc, vc) > 1e-8){
-        const float SKIN_ANG = -0.78;
-        float dd = abs(atan(vc.y, vc.x) - SKIN_ANG);
+      float cs = uOklab > 0.5 ? 1.0/OK_C : 1.0;
+      float hs = uOklab > 0.5 ? OK_H : 1.0;
+      if (length(pl.yz) > 1e-4*cs){
+        float dd = abs(atan(pl.z, pl.y) - (uOklab > 0.5 ? SKIN_OK : SKIN_L));
         dd = min(dd, 6.28318 - dd);                       // 円周上の距離
-        dlt *= mix(1.0 - 0.72*uMemory, 1.0, smoothstep(0.35, 0.78, dd));
+        dlt *= mix(1.0 - 0.72*uMemory, 1.0, smoothstep(0.35*hs, 0.78*hs, dd));
       }
     }                              // 遠景は分割を弱める(霞に彩度を掛けると濁る)
     if (dlt > 1e-3){
@@ -843,14 +905,17 @@ void main(){
       float shr = (1.0 - R)*sin(dlt)/max(dlt, 1e-3)
                 +       R *sin(dltF)/max(dltF, 1e-3);
       float sat = 1.0 / max(shr, 0.25);
-      col = divide(col, th, sat);
+      pl = divide(pl, th, sat);
       // 補色の差し色: 暗部にごく少数だけ混ぜる(影に反対色を置く印象派の常套)
-      if (h2r < 0.05*uSplit && l0 < 0.42) col = mix(col, divide(col, 3.14159, 0.60), 0.45);
+      if (h2r < 0.05*uSplit && l0 < darkCut()) pl = mix(pl, divide(pl, 3.14159, 0.60), 0.45);
     }
 
-    col = ceilChroma(col, 0.18*2.2);
+    pl = ceilChroma(pl);
 
-    col *= l0 / max(dot(col, LW), 1e-3);   // 輝度は保存(原典の思想はここで維持)
+    // 明度は保存する(原典の思想はここで維持)。上の 4 操作はどれも p.x に触らないので
+    // 実質は恒等だが、「明度は動かさない」という約束を式として残しておく
+    pl.x = l0;
+    col = fromPlane(pl);
     // 実際の絵では隣り合う筆は色相より**明度**が違う。原典の ±1.5% では
     // 平らな面がのっぺりしたまま残るので、分割の強さに連動させて振る
     col *= 1.0 + uSplit*0.20*(hash21(bestId + 9.7) - 0.5);

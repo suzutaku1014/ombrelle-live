@@ -59,18 +59,28 @@ _M1_INV = np.array([
 
 # ---------------------------------------------------------------- 伝達関数
 def srgb_to_linear(c: np.ndarray) -> np.ndarray:
-    """sRGB (0..1) → 線形 RGB。負値は 0 に丸めてから冪に入れる (NaN 回避)。"""
+    """sRGB → 線形 RGB。**絶対値に適用して符号を戻す**。
+
+    sRGB の伝達関数は [0,1] の外では定義されていない。ところがシェーダ側の色は
+    グレーディングで 1.0 を超えるし、色彩分割で成分が負にもなる。そこで
+    「絶対値へ適用して符号を戻す」という拡張を使う (CSS Color 4 と同じ流儀)。
+
+    正負で別の式を当てると、色域の外側で GLSL 版と数値が合わなくなる。
+    実際 1 度それで食い違った (最大誤差 0.65)。両実装で同じ拡張を使うこと。
+    """
     c = np.asarray(c, dtype=np.float32)
-    lo = c / 12.92
-    hi = np.power(np.maximum(c + 0.055, 0.0) / 1.055, 2.4)
-    return np.where(c <= 0.04045, lo, hi).astype(np.float32)
+    a = np.abs(c)
+    lo = a / 12.92
+    hi = np.power((a + 0.055) / 1.055, 2.4)
+    return (np.sign(c) * np.where(a <= 0.04045, lo, hi)).astype(np.float32)
 
 
 def linear_to_srgb(c: np.ndarray) -> np.ndarray:
     c = np.asarray(c, dtype=np.float32)
-    lo = c * 12.92
-    hi = 1.055 * np.power(np.maximum(c, 0.0), 1.0 / 2.4) - 0.055
-    return np.where(c <= 0.0031308, lo, hi).astype(np.float32)
+    a = np.abs(c)
+    lo = a * 12.92
+    hi = 1.055 * np.power(a, 1.0 / 2.4) - 0.055
+    return (np.sign(c) * np.where(a <= 0.0031308, lo, hi)).astype(np.float32)
 
 
 # ---------------------------------------------------------------- Oklab

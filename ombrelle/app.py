@@ -46,6 +46,8 @@ class State:
         # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
         # 見るときだけ点ける (a キー)。意匠ではないので config.json には保存しない
         self.palette = bool(args.palette)
+        # 色の操作をどの平面で行うか。既定は今までの luma 対立色平面
+        self.oklab = 1.0 if args.oklab else 0.0
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -111,6 +113,8 @@ def make_key_callback(state: State):
             state.stand = min(1.0, state.stand + 0.05)
         elif key == glfw.KEY_A:
             state.palette = not state.palette
+        elif key == glfw.KEY_J:
+            state.oklab = 0.0 if state.oklab > 0.5 else 1.0
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -160,6 +164,8 @@ def main() -> None:
                     help="人物をモネ風の風景の中へ合成する (実行中は c キー)")
     ap.add_argument("--palette", action="store_true",
                     help="人物と背景の dL / R_C / dh を測って HUD に出す (実行中は a キー)")
+    ap.add_argument("--oklab", action="store_true",
+                    help="色の注入/圧縮/分割/天井を Oklab で行う (実行中は j キー)")
     ap.add_argument("--stand", type=float, default=0.75,
                     help="合成時に人物が立つ奥行き 0=遠 1=手前")
     ap.add_argument("--haze", type=float, default=0.35)
@@ -296,6 +302,7 @@ def main() -> None:
                 "uSplit": state.split,
                 "uInject": state.inject,
                 "uMemory": state.memory,
+                "uOklab": state.oklab,
                 "uCompose": state.compose,
                 "uStand": state.stand,
                 "uWhite": tuple(float(x) for x in wb.gain),
