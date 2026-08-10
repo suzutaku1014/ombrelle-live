@@ -42,6 +42,7 @@ class State:
         self.inject = args.inject
         self.memory = args.memory
         self.idle_wind = args.idle_wind
+        self.flow_dead = args.flow_dead
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
         # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
@@ -111,6 +112,10 @@ def make_key_callback(state: State):
             state.memory = max(0.0, state.memory - 0.05)
         elif key == glfw.KEY_O:
             state.memory = min(1.0, state.memory + 0.05)
+        elif key == glfw.KEY_SEMICOLON:
+            state.flow_dead = max(0.0, state.flow_dead - 0.01)
+        elif key == glfw.KEY_APOSTROPHE:
+            state.flow_dead = min(0.5, state.flow_dead + 0.01)
         elif key == glfw.KEY_W:
             state.idle_wind = max(0.0, state.idle_wind - 0.1)
         elif key == glfw.KEY_E:
@@ -162,6 +167,9 @@ def main() -> None:
     ap.add_argument("--no-hud", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
+    ap.add_argument("--flow-dead", type=float, default=0.08,
+                    help="フローの不感帯。実カメラはノイズで常に流れが出るので、"
+                         "これ未満は動きとみなさない (実行中は ; ')")
     ap.add_argument("--cam-lod", type=float, default=2.0)
     ap.add_argument("--paint-mix", type=float, default=1.0,
                     help="0=グレーディングのみ 1=完全に絵")
@@ -220,7 +228,7 @@ def main() -> None:
     key_cb = make_key_callback(state)
     glfw.set_key_callback(renderer.window, key_cb)
 
-    flowf = None if args.no_flow else FlowField()
+    flowf = None if args.no_flow else FlowField(dead=args.flow_dead)
     wb = WhiteBalance()
 
     # 深度とマットは 1 本のスレッドで回す。2 本にすると GL のメインスレッドと
@@ -289,6 +297,7 @@ def main() -> None:
                 wb.update(frame)
                 if flowf is not None:
                     s = time.perf_counter()
+                    flowf.dead = state.flow_dead      # 実行中に ; ' で触れる
                     flowf.update(frame, stamp)
                     meter.add_stage("flow", time.perf_counter() - s)
                     renderer.update_flow(flowf.field)
@@ -335,7 +344,8 @@ def main() -> None:
                 renderer.update_hud(
                     build_hud(renderer.render_w, renderer.render_h,
                               hud_lines(meter, state, energy, src,
-                                        pal_in.stats, pal_out.stats, stab))
+                                        pal_in.stats, pal_out.stats, stab,
+                                        flowf.energy_raw if flowf is not None else 0.0))
                 )
             elif not state.hud:
                 renderer.update_hud(None)

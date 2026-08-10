@@ -32,14 +32,17 @@ def gust_env(t: float) -> float:
 
 
 class FlowField:
-    def __init__(self, width: int = 320, height: int = 180, ema: float = 0.40) -> None:
+    def __init__(self, width: int = 320, height: int = 180, ema: float = 0.40,
+                 dead: float = 0.08) -> None:
         self.width = width
         self.height = height
         self.ema = ema
+        self.dead = dead
         self._prev_gray: np.ndarray | None = None
         self._prev_t: float | None = None
         self.field = np.zeros((height, width, 2), dtype=np.float32)
         self.energy = 0.0
+        self.energy_raw = 0.0        # 不感帯を掛ける前。これが静止時の雑音の実測値
         self.centroid = (0.5, 0.5)   # y は上向き(GL 流儀)
         self.wind = (-1.0, 0.12)     # 既定は原典の弧を描く風の向き
 
@@ -68,11 +71,26 @@ class FlowField:
         # 空間を滑らかにする(格子の破れ防止)。テクスチャ自体が 4 倍に拡大されるので
         # ここで掛けすぎると局所的な動きの峰が消える
         flow = cv2.GaussianBlur(flow, (0, 0), sigmaX=3.0, sigmaY=3.0)
+
+        # 不感帯。**実カメラで初めて要ることが分かった。**
+        # 合成入力では連続する 2 枚が完全に同一なのでフローは厳密に 0 だが、
+        # 実カメラはセンサノイズと自動露出で毎フレーム変わるため、誰も動いて
+        # いなくても平均 0.02〜0.06 の流れが出続ける (実測)。筆の向きはこれに
+        # 従うので、止まっているものの上で筆が回り続けることになる。
+        #
+        # 単純な閾値ではなく**軟判定**にする。閾値で切ると、人がゆっくり動いた
+        # ときに流れが出たり消えたりして、筆の向きがパタパタする。
+        # 大きさから dead を差し引く形なら、境目で連続に繋がる。
+        m = np.linalg.norm(flow, axis=2, keepdims=True)
+        self.energy_raw = float(m.mean())
+        if self.dead > 0.0:
+            flow = flow * (np.maximum(m - self.dead, 0.0) / np.maximum(m, 1e-9))
+
         # 時間を滑らかにする
         self.field = self.ema * self.field + (1.0 - self.ema) * flow
 
         mag = np.linalg.norm(self.field, axis=2)
-        self.energy = float(mag.mean()) * 1.0
+        self.energy = float(mag.mean())
 
         total = float(mag.sum())
         if total > 1e-4:
