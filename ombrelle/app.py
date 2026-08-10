@@ -25,7 +25,7 @@ from .color import WhiteBalance
 from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
-from .palette import PaletteMeter
+from .palette import PaletteMeter, Stabilizer
 from .source import open_source
 
 
@@ -48,6 +48,11 @@ class State:
         self.palette = bool(args.palette)
         # 色の操作をどの平面で行うか。既定は今までの luma 対立色平面
         self.oklab = 1.0 if args.oklab else 0.0
+        # 実測した R_C を目標帯へ寄せる閉ループ。測っていないと動かせないので
+        # 点けたら計測も点く
+        self.stabilize = bool(args.stabilize)
+        if self.stabilize:
+            self.palette = True
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -115,6 +120,10 @@ def make_key_callback(state: State):
             state.palette = not state.palette
         elif key == glfw.KEY_J:
             state.oklab = 0.0 if state.oklab > 0.5 else 1.0
+        elif key == glfw.KEY_X:
+            state.stabilize = not state.stabilize
+            if state.stabilize:
+                state.palette = True      # 測っていないと制御できない
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -166,6 +175,8 @@ def main() -> None:
                     help="人物と背景の dL / R_C / dh を測って HUD に出す (実行中は a キー)")
     ap.add_argument("--oklab", action="store_true",
                     help="色の注入/圧縮/分割/天井を Oklab で行う (実行中は j キー)")
+    ap.add_argument("--stabilize", action="store_true",
+                    help="実測した R_C を目標帯へ寄せる (実行中は x キー、計測も自動で点く)")
     ap.add_argument("--stand", type=float, default=0.75,
                     help="合成時に人物が立つ奥行き 0=遠 1=手前")
     ap.add_argument("--haze", type=float, default=0.35)
@@ -214,6 +225,7 @@ def main() -> None:
     pal_out = PaletteMeter(ema=0.6)
     pal_out_at = 0.0
     PAL_OUT_HZ = 2.0
+    stab = Stabilizer()
 
     latest_depth: np.ndarray | None = None
     latest_matte: np.ndarray | None = None
@@ -266,6 +278,8 @@ def main() -> None:
             if not state.palette:
                 pal_in.reset()
                 pal_out.reset()
+            if not state.stabilize and stab.subj_chroma != 1.0:
+                stab.update(None)          # 切ったときも同じ変化率で 1.0 へ帰す
 
             energy = flowf.energy if flowf is not None else 0.0
             energy = max(energy, args.energy_floor)
@@ -280,7 +294,7 @@ def main() -> None:
                 renderer.update_hud(
                     build_hud(renderer.render_w, renderer.render_h,
                               hud_lines(meter, state, energy, src,
-                                        pal_in.stats, pal_out.stats))
+                                        pal_in.stats, pal_out.stats, stab))
                 )
             elif not state.hud:
                 renderer.update_hud(None)
@@ -303,6 +317,8 @@ def main() -> None:
                 "uInject": state.inject,
                 "uMemory": state.memory,
                 "uOklab": state.oklab,
+                "uSubjChroma": stab.subj_chroma,
+                "uSplitScale": stab.split_scale,
                 "uCompose": state.compose,
                 "uStand": state.stand,
                 "uWhite": tuple(float(x) for x in wb.gain),
@@ -318,6 +334,10 @@ def main() -> None:
                 s = time.perf_counter()
                 pal_out.update(renderer.read_scene(), latest_matte)
                 meter.add_stage("palette_out", time.perf_counter() - s)
+                # 制御は測った直後にだけ動かす。描画のたびに動かすと、
+                # 同じ観測に対して何度も補正を掛けることになる
+                if state.stabilize:
+                    stab.update(pal_out.stats)
 
             if state.shot:
                 state.shot = False
@@ -387,6 +407,8 @@ def main() -> None:
                 v = json.dumps(m.stats.as_dict()) if m.stats else "なし(人物が見えていません)"
                 print(f"palette {label} {v}")
             print(f"palette cost in={meter.ms('palette'):.2f}ms out={meter.ms('palette_out'):.2f}ms")
+            if state.stabilize:
+                print(f"stabilize  人物の彩度 x{stab.subj_chroma:.3f}  分割 x{stab.split_scale:.3f}")
     finally:
         cam.stop()
         if vision is not None:

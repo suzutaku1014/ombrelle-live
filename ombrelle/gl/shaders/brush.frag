@@ -44,6 +44,8 @@ uniform vec3  uWhite;      // 照明の色かぶり(グレーワールド)。こ
 uniform float uInject;     // 中性面への色の注入量。分割は平均を保存するので彩度は増えない
 uniform float uMemory;     // 記憶色(肌)の保護。肌の近くだけ色相の振れ幅を抑える
 uniform float uOklab;      // 0=luma の対立色平面 / 1=Oklab。色の操作だけを差し替える A/B
+uniform float uSubjChroma; // 人物領域の彩度倍率。実測した R_C を目標帯へ寄せる (1.0 で無効)
+uniform float uSplitScale; // 分離角の全体倍率。背景が無彩色で比が跳ねたとき絞る (1.0 で無効)
 uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
 uniform float uHasMatte;
 uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
@@ -457,6 +459,13 @@ vec3 relight(vec3 c){
 
 float matteAt(vec2 q){
   if (uHasMatte < 0.5 || uCompose < 0.5) return 1.0;   // 合成しないなら全部が「人物」= 現実
+  return clamp(texture(uMatte, img(clamp(q, 0.0, 1.0))).r, 0.0, 1.0);
+}
+
+// 人物かどうかそのもの。matteAt() は合成の都合で「合成しないなら 1.0」を返すので、
+// 領域ごとに色を変えたいときはこちらを使う
+float personAt(vec2 q){
+  if (uHasMatte < 0.5) return 0.0;
   return clamp(texture(uMatte, img(clamp(q, 0.0, 1.0))).r, 0.0, 1.0);
 }
 
@@ -879,9 +888,15 @@ void main(){
     //   compand … パレットの水準と圧縮を決める (ここで画面全体の彩度がほぼ揃う)
     //   divide  … その水準のまま色相だけ散らす
     //   ceil    … 分割の彩度補正が天井を超えた分だけ戻す
-    pl = compand(pl, uChroma * (0.92 + 0.24*(h2r - 0.5)), d);
+    // 彩度は画面全体に一律ではなく、領域ごとに効かせる。「白い壁で顔だけ派手」は
+    // 絶対彩度ではなく人物と背景の比の問題なので、人物側だけを動かす。
+    // uSubjChroma が 1.0 のときはテクスチャも引かない (既定の経路を変えない)
+    float sc = 1.0;
+    if (uHasMatte > 0.5 && abs(uSubjChroma - 1.0) > 1e-3)
+      sc = mix(1.0, uSubjChroma, personAt(qc));
+    pl = compand(pl, uChroma * (0.92 + 0.24*(h2r - 0.5)) * sc, d);
 
-    float dlt = uSplit * (0.30 + 0.70*d) * 1.90 / max(bs, 0.4);
+    float dlt = uSplit * uSplitScale * (0.30 + 0.70*d) * 1.90 / max(bs, 0.4);
     dlt = min(dlt, 1.90);
 
     // ---- 記憶色 (肌) の保護 ----

@@ -86,14 +86,16 @@ def palette_line(label: str, stats) -> str:
 
 
 def hud_lines(meter: Meter, state, energy: float, depth_source: str,
-              stats_in=None, stats_out=None) -> list[str]:
+              stats_in=None, stats_out=None, stab=None) -> list[str]:
     # 入力の比と出力の比を並べる。「入力 4.07 倍 → 圧縮後 1.65 倍」のように、
     # 処理系が何をしたかは差でしか読めない
-    palette = (
-        [palette_line("in", stats_in), palette_line("out", stats_out)]
-        if getattr(state, "palette", False) else
-        ["palette  off  (a で計測)"]
-    )
+    if getattr(state, "palette", False):
+        palette = [palette_line("in", stats_in), palette_line("out", stats_out)]
+        if getattr(state, "stabilize", False) and stab is not None:
+            palette.append(f"stabilize ON   人物の彩度 x{stab.subj_chroma:4.2f}   "
+                           f"分割 x{stab.split_scale:4.2f}")
+    else:
+        palette = ["palette  off  (a で計測  x で自動補正)"]
     return [
         f"view {int(state.view)}:{_VIEW_NAMES.get(int(state.view), '?')}   "
         f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms",

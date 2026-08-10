@@ -65,6 +65,7 @@ def snapshot(state, energy_floor: float, extra: dict | None = None) -> dict:
         # 意匠の値ではなく「どちらの色空間で描いたか」。config.json には残さないが、
         # スクショの脇には必ず要る (同じ設定値でも別の絵になるため)
         "oklab": int(getattr(state, "oklab", 0.0) > 0.5),
+        "stabilize": int(getattr(state, "stabilize", False)),
     }
     if extra:
         d.update(extra)

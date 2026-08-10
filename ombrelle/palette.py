@@ -142,6 +142,69 @@ class PaletteMeter:
         return self.stats
 
 
+class Stabilizer:
+    """実測した R_C を目標帯へ寄せる。**出力側を見る閉ループ**。
+
+    入力側だけを見て前もって補正する方が安定だが、compand と divide が比を
+    どう動かすかは設定値に依存するので、入力から出力の比は予測できない
+    (実測で 1.145 → 1.057)。だから描いた結果を見て少しずつ寄せる。
+
+    閉ループを暴れさせないための仕掛けが3つ:
+
+      * **不感帯** … 目標帯の中では一切動かさない。連続補正すると常に微振動する
+      * **対数の誤差** … 比の制御なので、差ではなく比の対数で測る。
+        R_C 2.0 と 0.5 が目標 1.0 に対して同じ大きさの誤差になる
+      * **変化率の上限** … 人物が出入りしたフレームで飛ばない。
+        画面全体の色が呼吸したら、比が正しくても体験としては失敗
+
+    返す2つの係数はどちらも「1.0 で無効」。停止時は必ず 1.0 へ戻す。
+    """
+
+    def __init__(
+        self,
+        target: tuple[float, float] = TARGET_RC,
+        gain: float = 0.35,
+        step: float = 0.04,
+        lo: float = 0.55,
+        hi: float = 1.80,
+    ) -> None:
+        self.target = target
+        self.gain = gain
+        self.step = step          # 1 回の更新で動かせる上限
+        self.lo, self.hi = lo, hi
+        self.subj_chroma = 1.0
+        self.split_scale = 1.0
+
+    def reset(self) -> None:
+        self.subj_chroma = 1.0
+        self.split_scale = 1.0
+
+    def update(self, stats: RegionStats | None) -> tuple[float, float]:
+        if stats is None:
+            # 人物が見えないなら制御する根拠が無い。急に戻すと画面が跳ねるので、
+            # 同じ変化率の上限のまま 1.0 へ帰す
+            self._approach(1.0, 1.0)
+            return self.subj_chroma, self.split_scale
+
+        rc = max(stats.Rc, 1e-3)
+        lo_t, hi_t = self.target
+        goal = min(max(rc, lo_t), hi_t)          # 帯の中なら rc 自身 → 誤差 0
+        err = float(np.log(rc / goal))
+        want = float(np.clip(self.subj_chroma * np.exp(-self.gain * err), self.lo, self.hi))
+
+        # 背景がほぼ無彩色で比が跳ねているときは、分割も弱める。
+        # 比が大きいまま色相を大きく振ると、人物だけが斑になる
+        over = max(0.0, float(np.log(rc / hi_t)))
+        want_split = float(np.clip(1.0 - 0.5 * over, 0.6, 1.0))
+
+        self._approach(want, want_split)
+        return self.subj_chroma, self.split_scale
+
+    def _approach(self, chroma: float, split: float) -> None:
+        self.subj_chroma += float(np.clip(chroma - self.subj_chroma, -self.step, self.step))
+        self.split_scale += float(np.clip(split - self.split_scale, -self.step, self.step))
+
+
 def _region(lab: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """領域の代表値 (L, C, a, b) を返す。
 
