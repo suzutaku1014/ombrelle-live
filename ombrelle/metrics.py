@@ -71,7 +71,29 @@ def build_hud(width: int, height: int, lines: list[str]) -> np.ndarray:
     return hud
 
 
-def hud_lines(meter: Meter, state, energy: float, depth_source: str) -> list[str]:
+def palette_line(label: str, stats) -> str:
+    """人物と背景の関係を1行で出す。
+
+    R_C が目標帯 (palette.TARGET_RC) を外れているときだけ `*` を付ける。
+    「今どちらへ外れているか」が一目で分かることが目的なので、
+    帯の中では飾りを付けない。
+    """
+    if stats is None:
+        return f"palette {label:<4} --"
+    mark = "*" if not stats.in_target() else " "
+    return (f"palette {label:<4} dL {stats.dL:+6.3f}  R_C {stats.Rc:5.2f}{mark} "
+            f"dh {stats.dh:4.2f}  area {stats.area:4.2f}")
+
+
+def hud_lines(meter: Meter, state, energy: float, depth_source: str,
+              stats_in=None, stats_out=None) -> list[str]:
+    # 入力の比と出力の比を並べる。「入力 4.07 倍 → 圧縮後 1.65 倍」のように、
+    # 処理系が何をしたかは差でしか読めない
+    palette = (
+        [palette_line("in", stats_in), palette_line("out", stats_out)]
+        if getattr(state, "palette", False) else
+        ["palette  off  (a で計測)"]
+    )
     return [
         f"view {int(state.view)}:{_VIEW_NAMES.get(int(state.view), '?')}   "
         f"{meter.fps:5.1f} fps   e2e {meter.latency_ms:5.1f} ms",
@@ -80,6 +102,7 @@ def hud_lines(meter: Meter, state, energy: float, depth_source: str) -> list[str
         f"compose {'ON  stand ' + format(state.stand, '4.2f') if state.compose > 0.5 else 'OFF'}",
         f"energy {energy:6.4f}   flowGain {state.flow_gain:4.1f}   lod {state.cam_lod:3.1f}",
         f"haze {state.haze:4.2f}  chroma {state.chroma:4.2f}  brush {state.brush:4.2f}  split {state.split:4.2f}",
+        *palette,
         "v b brush  t y split  f g inject  i o memory  k l haze  n m chroma  , . lod",
-        "c compose   r u stand   0-3 view   s shot   p save   d depth   q quit",
+        "c compose   r u stand   0-3 view   s shot   p save   d depth   a palette   q quit",
     ]

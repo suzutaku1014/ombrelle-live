@@ -25,6 +25,7 @@ from .color import WhiteBalance
 from .flow import FlowField, gust_env
 from .gl.renderer import Renderer
 from .metrics import Meter, build_hud, hud_lines
+from .palette import PaletteMeter
 from .source import open_source
 
 
@@ -42,6 +43,9 @@ class State:
         self.memory = args.memory
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
+        # 計測は既定 OFF。人物マットに 8ms 掛かる分だけ深度の更新率が落ちるので、
+        # 見るときだけ点ける (a キー)。意匠ではないので config.json には保存しない
+        self.palette = bool(args.palette)
         self.hud = not args.no_hud
         self.quit = False
         self.shot = False
@@ -105,6 +109,8 @@ def make_key_callback(state: State):
             state.stand = max(0.2, state.stand - 0.05)
         elif key == glfw.KEY_U:
             state.stand = min(1.0, state.stand + 0.05)
+        elif key == glfw.KEY_A:
+            state.palette = not state.palette
         elif key == glfw.KEY_D:
             order = ["teacher", "student", "off"]
             state.depth_kind = order[(order.index(state.depth_kind) + 1) % 3]
@@ -152,6 +158,8 @@ def main() -> None:
                     help="記憶色(肌)の保護。肌の近くの色相だけ振れ幅を抑える。0で保護なし")
     ap.add_argument("--compose", action="store_true",
                     help="人物をモネ風の風景の中へ合成する (実行中は c キー)")
+    ap.add_argument("--palette", action="store_true",
+                    help="人物と背景の dL / R_C / dh を測って HUD に出す (実行中は a キー)")
     ap.add_argument("--stand", type=float, default=0.75,
                     help="合成時に人物が立つ奥行き 0=遠 1=手前")
     ap.add_argument("--haze", type=float, default=0.35)
@@ -190,12 +198,19 @@ def main() -> None:
     # 深度とマットは 1 本のスレッドで回す。2 本にすると GL のメインスレッドと
     # 合わせて 3 経路が同じ GPU を奪い合い、間欠的にハングする (ombrelle/vision.py 参照)
     vision = None
-    if args.depth != "off" or args.compose:
+    if args.depth != "off" or args.compose or args.palette:
         from .vision import VisionWorker
         vision = VisionWorker(depth_kind=args.depth, ckpt=args.student_ckpt,
-                              want_matte=args.compose).start()
+                              want_matte=args.compose or args.palette).start()
+    # 入力(カメラ)と出力(描いた絵)を別々に測る。処理系が彩度比をどう動かしたかは
+    # 片方だけ見ても分からない。出力側は FBO の読み戻しで GPU を止めるので低レート
+    pal_in = PaletteMeter()
+    pal_out = PaletteMeter(ema=0.6)
+    pal_out_at = 0.0
+    PAL_OUT_HZ = 2.0
 
     latest_depth: np.ndarray | None = None
+    latest_matte: np.ndarray | None = None
     last_seq = -1
     adv = 0.0
     hud_at = 0.0
@@ -222,8 +237,9 @@ def main() -> None:
                     vision.submit(frame)
 
             if vision is not None:
-                # c キーで合成を始めたら、その場でマットも作らせる
-                vision.want_matte = state.compose > 0.5
+                # c キーで合成を始めたら、その場でマットも作らせる。
+                # 計測 (a キー) もマットを要るので、どちらかが立っていれば作る
+                vision.want_matte = state.compose > 0.5 or state.palette
                 d = vision.latest_depth()
                 if d is not None:
                     latest_depth = d
@@ -231,8 +247,19 @@ def main() -> None:
                     meter.add_stage("depth", vision.depth_s)
                 mt = vision.latest_matte()
                 if mt is not None:
+                    latest_matte = mt
                     renderer.update_matte(mt)
                     meter.add_stage("seg", vision.matte_s)
+                    # マットが更新されたフレームだけ測る。毎フレーム Oklab に
+                    # 変換する必要はない (統計は EMA で均されている)。
+                    # マットは 1〜2 フレーム古いが、領域の代表値には影響しない
+                    if state.palette and frame is not None:
+                        s = time.perf_counter()
+                        pal_in.update(frame, mt)
+                        meter.add_stage("palette", time.perf_counter() - s)
+            if not state.palette:
+                pal_in.reset()
+                pal_out.reset()
 
             energy = flowf.energy if flowf is not None else 0.0
             energy = max(energy, args.energy_floor)
@@ -246,7 +273,8 @@ def main() -> None:
                 src = state.depth_kind if vision is not None else "off"
                 renderer.update_hud(
                     build_hud(renderer.render_w, renderer.render_h,
-                              hud_lines(meter, state, energy, src))
+                              hud_lines(meter, state, energy, src,
+                                        pal_in.stats, pal_out.stats))
                 )
             elif not state.hud:
                 renderer.update_hud(None)
@@ -274,19 +302,37 @@ def main() -> None:
             })
             meter.add_latency(time.perf_counter() - stamp)
 
+            # 描いた結果を測る。読み戻しは GPU を止めるので 2Hz に絞る。
+            # 絵は前回の描画結果、マットは数フレーム前のもので、厳密には
+            # 同一時刻ではない。領域の代表値としては許容範囲
+            if (state.palette and latest_matte is not None
+                    and t - pal_out_at > 1.0 / PAL_OUT_HZ):
+                pal_out_at = t
+                s = time.perf_counter()
+                pal_out.update(renderer.read_scene(), latest_matte)
+                meter.add_stage("palette_out", time.perf_counter() - s)
+
             if state.shot:
                 state.shot = False
                 stem = f"{datetime.now():%Y%m%d-%H%M%S}"
                 p = renderer.screenshot(Path("shots") / f"{stem}.png")
                 # どのスクショがどの設定だったかを必ず残す
                 side = p.with_suffix(".json")
+                extra = {
+                    "source": args.source,
+                    "fps": round(meter.fps, 1),
+                    "e2e_ms": round(meter.latency_ms, 1),
+                    "energy": round(float(energy), 5),
+                }
+                # 測ったなら必ずスクショと対にする。後から「この絵のときの
+                # R_C はいくつだったか」を再現なしに引けることが目的
+                if pal_in.stats is not None:
+                    extra["palette_in"] = pal_in.stats.as_dict()
+                if pal_out.stats is not None:
+                    extra["palette_out"] = pal_out.stats.as_dict()
                 side.write_text(
-                    json.dumps(cfg.snapshot(state, args.energy_floor, {
-                        "source": args.source,
-                        "fps": round(meter.fps, 1),
-                        "e2e_ms": round(meter.latency_ms, 1),
-                        "energy": round(float(energy), 5),
-                    }), indent=2) + "\n", encoding="utf-8")
+                    json.dumps(cfg.snapshot(state, args.energy_floor, extra),
+                               indent=2) + "\n", encoding="utf-8")
                 # 生のカメラフレームも残す。これがあれば Claude 側で
                 # --source shots/xxx_raw.png として同じ画で意匠を詰められる
                 if frame is not None:
@@ -327,6 +373,13 @@ def main() -> None:
             f"flow={meter.ms('flow'):.1f}ms depth_infer={meter.ms('depth'):.1f}ms "
             f"depth_updates={dhz:.1f}Hz dropped={drop}"
         )
+        # 検証実行 (--frames/--shot) でも数値が標準出力に残るようにする。
+        # HUD を目で読んで書き写す経路しか無いと、写し間違いと再現不能が起きる
+        if state.palette:
+            for label, m in (("in ", pal_in), ("out", pal_out)):
+                v = json.dumps(m.stats.as_dict()) if m.stats else "なし(人物が見えていません)"
+                print(f"palette {label} {v}")
+            print(f"palette cost in={meter.ms('palette'):.2f}ms out={meter.ms('palette_out'):.2f}ms")
     finally:
         cam.stop()
         if vision is not None:

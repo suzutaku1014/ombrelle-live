@@ -228,11 +228,19 @@ class Renderer:
 
         glfw.swap_buffers(self.window)
 
-    def screenshot(self, path: str | Path) -> Path:
-        """内部解像度の FBO を読み出して保存する(ウィンドウ倍率に依存しない)"""
+    def read_scene(self) -> np.ndarray:
+        """内部解像度の FBO を RGB uint8 (H, W, 3) で読み戻す。HUD は乗っていない。
+
+        GPU をストールさせるので毎フレーム呼んではいけない。**描いた結果**を
+        測りたいときだけ、低いレートで呼ぶこと。
+        """
         raw = self.fbo.read(components=3, alignment=1)
         img = np.frombuffer(raw, dtype=np.uint8).reshape(self.render_h, self.render_w, 3)
-        img = np.flipud(img)  # GL は y 上向き
+        return np.flipud(img)  # GL は y 上向き
+
+    def screenshot(self, path: str | Path) -> Path:
+        """内部解像度の FBO を読み出して保存する(ウィンドウ倍率に依存しない)"""
+        img = self.read_scene()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
