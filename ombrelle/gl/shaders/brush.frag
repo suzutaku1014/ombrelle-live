@@ -47,6 +47,7 @@ uniform float uOklab;      // 0=luma の対立色平面 / 1=Oklab。色の操作
 uniform float uSubjChroma; // 人物領域の彩度倍率。実測した R_C を目標帯へ寄せる (1.0 で無効)
 uniform float uSplitScale; // 分離角の全体倍率。背景が無彩色で比が跳ねたとき絞る (1.0 で無効)
 uniform float uIdleWind;   // 静止時の微風。0=誰も動かなければ筆も止まる / 1=従来
+uniform float uGrain;      // 粒子感の量。毎フレーム変わるので静けさと競合する (従来 0.012)
 uniform sampler2D uMatte;  // R16F 人物 1 / 背景 0
 uniform float uHasMatte;
 uniform float uCompose;    // 0=現実を絵にする  1=モネ風の風景の中へ人物を合成する
@@ -924,7 +925,9 @@ void main(){
   if (uView < 0.5 || uView > 2.5) col *= 1.0 - 0.10*smoothstep(0.60, 1.25, length(p));
 
   // 粒子感・黒禁止
-  col += (hash21(gl_FragCoord.xy*0.7 + mod(t, 10.0)) - 0.5)*0.012;
+  // 粒子感。**毎フレーム違う乱数**なので、止まっている画面でも常にざわつく。
+  // 絵の質感としては効くが、静けさとは真正面から競合するので量を出しておく
+  col += (hash21(gl_FragCoord.xy*0.7 + mod(t, 10.0)) - 0.5)*uGrain;
   if (uOklab > 0.5){
     // 出力先は RGB8 なので、ここで丸めなければ書き込みで成分ごとに切られる。
     // 切られると色相と明度が動く (§4.5) ので、彩度だけ落として色域へ入れる

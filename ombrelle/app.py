@@ -46,6 +46,7 @@ class State:
         self.flow_dead = args.flow_dead
         self.cam_ema = args.cam_ema
         self.orient_depth = args.orient_depth
+        self.grain = args.grain
         self.depth_blur = args.depth_blur
         self.compose = 1.0 if args.compose else 0.0
         self.stand = args.stand
@@ -191,15 +192,18 @@ def main() -> None:
     ap.add_argument("--no-hud", action="store_true")
     ap.add_argument("--no-mirror", action="store_true")
     ap.add_argument("--flow-gain", type=float, default=1.5)
-    ap.add_argument("--orient-depth", type=float, default=1.0,
+    ap.add_argument("--grain", type=float, default=0.012,
+                    help="粒子感の量。毎フレーム違う乱数なので静止画面でも常にざわつく。0で無し")
+    ap.add_argument("--orient-depth", type=float, default=0.4,
                     help="筆の向きが深度にどれだけ従うか。0=深度を無視して筋目だけ "
-                         "1=従来 (実行中は 4 5)")
+                         "1=従来。深度は実カメラでは常に揺れていて、寄与に対して "
+                         "雑音が大きい (実行中は 4 5)")
     ap.add_argument("--depth-blur", type=float, default=0.0,
                     help="深度マップの空間ぼかし(画素)。ノイズは高周波なのでここで落ちる "
                          "(実行中は 6 7)")
     ap.add_argument("--depth-ema", type=float, default=0.70,
                     help="深度マップの時間平滑化。平らな面で筆の向きが回り続けるのを抑える")
-    ap.add_argument("--cam-ema", type=float, default=0.70,
+    ap.add_argument("--cam-ema", type=float, default=0.85,
                     help="入力の時間平滑化。センサノイズで筆の色が明滅するのを抑える。"
                          "動いている間は自動で外れる。0で無効 (実行中は z)")
     ap.add_argument("--flow-dead", type=float, default=0.08,
@@ -436,6 +440,7 @@ def main() -> None:
                 "uMemory": state.memory,
                 "uIdleWind": state.idle_wind,
                 "uOrientDepth": state.orient_depth,
+                "uGrain": state.grain,
                 "uOklab": state.oklab,
                 "uSubjChroma": stab.subj_chroma,
                 "uSplitScale": stab.split_scale,
