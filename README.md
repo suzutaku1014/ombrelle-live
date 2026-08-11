@@ -27,9 +27,6 @@ uv run python -m ombrelle.app --source cam:0 --depth teacher
 
 `brush 1.6 / split 0.60 / chroma 1.30 / inject 0.28 / haze 0.35`
 
-背景や周辺色が変わっても配色を安定させるための考え方、色彩分割とグラデーションの
-決め方、学習課題、参考文献は [色彩設計教科書](docs/color_design_textbook.md) にまとめた。
-
 ### 検証用の合成シーン
 
 奥行きの手がかりと周期的な動きを意図的に入れた手続き生成のテスト台。
