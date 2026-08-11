@@ -194,15 +194,17 @@ def main() -> None:
     ap.add_argument("--flow-gain", type=float, default=1.5)
     ap.add_argument("--grain", type=float, default=0.012,
                     help="粒子感の量。毎フレーム違う乱数なので静止画面でも常にざわつく。0で無し")
-    ap.add_argument("--orient-depth", type=float, default=0.4,
-                    help="筆の向きが深度にどれだけ従うか。0=深度を無視して筋目だけ "
-                         "1=従来。深度は実カメラでは常に揺れていて、寄与に対して "
-                         "雑音が大きい (実行中は 4 5)")
+    ap.add_argument("--orient-depth", type=float, default=1.0,
+                    help="筆の向きが深度にどれだけ従うか。0=深度を無視して筋目だけ。"
+                         "下げれば静かになるが「筆が形をなぞる」という中核の考え方を"
+                         "捨てることになる。静けさは --depth-ema で買う方がよい "
+                         "(実行中は 4 5)")
     ap.add_argument("--depth-blur", type=float, default=0.0,
                     help="深度マップの空間ぼかし(画素)。ノイズは高周波なのでここで落ちる "
                          "(実行中は 6 7)")
-    ap.add_argument("--depth-ema", type=float, default=0.70,
-                    help="深度マップの時間平滑化。平らな面で筆の向きが回り続けるのを抑える")
+    ap.add_argument("--depth-ema", type=float, default=0.90,
+                    help="深度マップの時間平滑化。平らな面で筆の向きが回り続けるのを抑える。"
+                         "上げるほど静かになるが、人が近づいたとき筆の大きさと霞が遅れる")
     ap.add_argument("--cam-ema", type=float, default=0.85,
                     help="入力の時間平滑化。センサノイズで筆の色が明滅するのを抑える。"
                          "動いている間は自動で外れる。0で無効 (実行中は z)")
